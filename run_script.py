@@ -24,6 +24,43 @@ def run_tts(text, role, emotion):
     return None
 
 
+# ======================
+# ⭐ 新增：合成音频
+# ======================
+def merge_audio(audio_files, output="audio.wav", gap=0.3):
+
+    if len(audio_files) == 0:
+        print("❌ 没有音频可合成")
+        return
+
+    print("\n🎧 开始合成 audio.wav ...")
+
+    merged_audio = []
+    sample_rate = None
+
+    for i, file in enumerate(audio_files):
+        audio, sr = sf.read(file)
+
+        # 转单声道
+        if len(audio.shape) > 1:
+            audio = audio.mean(axis=1)
+
+        if sample_rate is None:
+            sample_rate = sr
+
+        # 插入静音
+        if i > 0:
+            silence = [0.0] * int(sr * gap)
+            merged_audio.extend(silence)
+
+        merged_audio.extend(audio)
+
+    # 保存
+    sf.write(output, merged_audio, sample_rate)
+
+    print(f"🎉 audio.wav 合成完成，总时长: {len(merged_audio)/sample_rate:.2f}s")
+
+
 def main():
 
     # 检查 script.json
@@ -40,7 +77,7 @@ def main():
     timeline = []
 
     current_time = 0.0
-    silence_gap = 0.3  # 每句间隔（你可以调）
+    silence_gap = 0.3  # 每句间隔
 
     for i, item in enumerate(script, 1):
         role = item.get("role", "未知")
@@ -55,8 +92,12 @@ def main():
 
             audio_files.append(filename)
 
-            # ===== 关键：获取音频时长 =====
+            # ===== 获取音频时长 =====
             audio, sr = sf.read(filename)
+
+            if len(audio.shape) > 1:
+                audio = audio.mean(axis=1)
+
             duration = len(audio) / sr
 
             # ===== 写入 timeline =====
@@ -77,6 +118,9 @@ def main():
         json.dump(timeline, f, indent=2, ensure_ascii=False)
 
     print("\n📌 timeline 已生成：timeline.json")
+
+    # ⭐⭐ 核心新增：合成 audio.wav
+    merge_audio(audio_files)
 
     print(f"\n✅ 完成！生成音频: {len(audio_files)} 条")
 
