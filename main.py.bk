@@ -1,0 +1,196 @@
+import numpy as np
+import soundfile as sf
+import cv2
+import os
+import random
+
+# ======================
+# 参数
+# ======================
+FPS = 25
+FRAME_DURATION = 1.0 / FPS
+
+BASE_IMG = "res/base.png"
+
+MOUTH_OPEN = "res/mouth/open.png"
+MOUTH_CLOSE = "res/mouth/close.png"
+
+EYE_OPEN = "res/eye/open.png"
+EYE_CLOSE = "res/eye/close.png"
+
+AUDIO_PATH = "audio.wav"
+
+OUTPUT_DIR = "frames"
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+# 坐标
+MOUTH_X = 100
+MOUTH_Y = 185
+
+LEFT_EYE_X = 66
+LEFT_EYE_Y = 126
+
+RIGHT_EYE_X = 150
+RIGHT_EYE_Y = 126
+
+# ======================
+# 读取音频
+# ======================
+audio, sr = sf.read(AUDIO_PATH)
+
+if len(audio.shape) > 1:
+    audio = audio.mean(axis=1)
+
+# ======================
+# 分帧 + 音量
+# ======================
+samples_per_frame = int(sr * FRAME_DURATION)
+
+volumes = []
+
+for i in range(0, len(audio), samples_per_frame):
+    frame = audio[i:i+samples_per_frame]
+
+    if len(frame) < samples_per_frame:
+        break
+
+    volume = np.sqrt(np.mean(frame**2))
+    volumes.append(volume)
+
+# ======================
+# 归一化 + 平滑
+# ======================
+max_vol = max(volumes) if max(volumes) > 0 else 1
+volumes = [v / max_vol for v in volumes]
+
+smooth_volumes = []
+window = 3
+
+for i in range(len(volumes)):
+    left = max(0, i - window)
+    right = min(len(volumes), i + window)
+    avg = np.mean(volumes[left:right])
+    smooth_volumes.append(avg)
+
+# ======================
+# 音量统计
+# ======================
+arr = np.array(smooth_volumes)
+
+p50 = np.percentile(arr, 50)
+p75 = np.percentile(arr, 75)
+
+print("\n==== 音量统计 ====")
+print(f"min  : {arr.min():.3f}")
+print(f"max  : {arr.max():.3f}")
+print(f"mean : {arr.mean():.3f}")
+print(f"p50  : {p50:.3f}")
+print(f"p75  : {p75:.3f}")
+print("==================\n")
+
+# ======================
+# 嘴型（两状态）
+# ======================
+def get_mouth(v):
+    return "open" if v > p50 else "close"
+
+timeline = [get_mouth(v) for v in smooth_volumes]
+
+# ======================
+# 👀 眨眼时间轴
+# ======================
+def generate_blink_timeline(frame_count, fps):
+    timeline = [False] * frame_count
+
+    i = 0
+    while i < frame_count:
+        interval = random.randint(2*fps, 5*fps)
+        i += interval
+
+        if i >= frame_count:
+            break
+
+        duration = random.randint(2, 4)
+
+        for j in range(duration):
+            if i + j < frame_count:
+                timeline[i + j] = True
+
+    return timeline
+
+blink_timeline = generate_blink_timeline(len(timeline), FPS)
+
+# ======================
+# 读取图片
+# ======================
+base = cv2.imread(BASE_IMG)
+
+mouth_open = cv2.imread(MOUTH_OPEN, cv2.IMREAD_UNCHANGED)
+mouth_close = cv2.imread(MOUTH_CLOSE, cv2.IMREAD_UNCHANGED)
+
+eye_open = cv2.imread(EYE_OPEN, cv2.IMREAD_UNCHANGED)
+eye_close = cv2.imread(EYE_CLOSE, cv2.IMREAD_UNCHANGED)
+
+# ======================
+# overlay
+# ======================
+def overlay(bg, fg, x, y):
+    h, w = fg.shape[:2]
+
+    for i in range(h):
+        for j in range(w):
+
+            if y + i >= bg.shape[0] or x + j >= bg.shape[1]:
+                continue
+
+            pixel = fg[i, j]
+            alpha = pixel[3] / 255.0 if len(pixel) == 4 else 1.0
+
+            if alpha == 0:
+                continue
+
+            for c in range(3):
+                bg[y+i, x+j, c] = int(
+                    bg[y+i, x+j, c] * (1 - alpha) +
+                    pixel[c] * alpha
+                )
+
+# ======================
+# 生成帧
+# ======================
+for i, state in enumerate(timeline):
+    frame = base.copy()
+
+    # ===== 嘴 =====
+    if state == "open":
+        overlay(frame, mouth_open, MOUTH_X, MOUTH_Y)
+    else:
+        overlay(frame, mouth_close, MOUTH_X, MOUTH_Y)
+
+    # ===== 👀 眼睛 =====
+    if blink_timeline[i]:
+        eye = eye_close
+    else:
+        eye = eye_open
+
+    # 左眼
+    overlay(frame, eye, LEFT_EYE_X, LEFT_EYE_Y)
+    # 右眼
+    overlay(frame, eye, RIGHT_EYE_X, RIGHT_EYE_Y)
+
+    filename = f"{OUTPUT_DIR}/frame_{i:04d}.png"
+    cv2.imwrite(filename, frame)
+
+print(f"帧生成完成: {len(timeline)} 帧")
+
+# ======================
+# 视频
+# ======================
+cmd = (
+    f"ffmpeg -y -framerate {FPS} -i {OUTPUT_DIR}/frame_%04d.png "
+    f"-i {AUDIO_PATH} -c:v libx264 -pix_fmt yuv420p -c:a aac output.mp4"
+)
+
+os.system(cmd)
+
+print("🎉 视频生成完成：output.mp4")
