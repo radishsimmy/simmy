@@ -38,7 +38,7 @@ with open(TIMELINE_PATH, "r") as f:
 
 def get_role(t):
     for seg in timeline:
-        if seg["start"] <= t <= seg["end"]:
+        if seg["start"] <= t < seg["end"]:
             return seg["role"]
     return None
 
@@ -64,7 +64,7 @@ if len(vols) == 0:
 mx = max(vols)
 vols = [v / mx for v in vols]
 
-states = ["open" if v > 0.35 else "close" for v in vols]
+states = ["open" if v > 0.28 else "close" for v in vols]  # ↓ 稍微降阈值
 N = len(states)
 
 # ======================
@@ -93,16 +93,13 @@ B_EYE_OPEN = load("res/B/eye/open.png")
 B_EYE_CLOSE = load("res/B/eye/close.png")
 
 # ======================
-# overlay（稳定版）
+# overlay
 # ======================
 def overlay(bg, fg, x, y):
     if fg is None:
         return
 
     h, w = fg.shape[:2]
-
-    if x >= bg.shape[1] or y >= bg.shape[0]:
-        return
 
     x1, y1 = max(0, x), max(0, y)
     x2, y2 = min(bg.shape[1], x + w), min(bg.shape[0], y + h)
@@ -141,19 +138,47 @@ blink_A = blink(N)
 blink_B = blink(N)
 
 # ======================
-# center（防错位）
-# ======================
-def center(base_x, base_y, img):
-    if img is None:
-        return base_x, base_y
-    h, w = img.shape[:2]
-    return base_x - w//2, base_y - h//2
-
-# ======================
-# layout
+# layout anchor
 # ======================
 A_X, A_Y = int(W * 0.25), int(H * 0.65)
 B_X, B_Y = int(W * 0.75), int(H * 0.65)
+
+# ======================
+# base-relative layout (关键修复)
+# ======================
+def draw_character(frame, base, mouth_open, mouth_close, eye_open, eye_close,
+                   x, y, is_talking, blink_arr, i):
+
+    if base is None:
+        return
+
+    bh, bw = base.shape[:2]
+
+    top_left_x = x - bw // 2
+    top_left_y = y - bh // 2
+
+    # base
+    overlay(frame, base, top_left_x, top_left_y)
+
+    # ======= 关键：用比例定位五官 =======
+    eye_y = int(bh * 0.28)
+    eye_dx = int(bw * 0.18)
+
+    mouth_y = int(bh * 0.60)
+
+    # eyes
+    eye_img = eye_close if blink_arr[i] else eye_open
+
+    overlay(frame, eye_img, top_left_x + bw//2 - eye_dx - 10,
+                        top_left_y + eye_y)
+    overlay(frame, eye_img, top_left_x + bw//2 + eye_dx - 10,
+                        top_left_y + eye_y)
+
+    # mouth
+    if is_talking:
+        overlay(frame, mouth_open, top_left_x + bw//2, top_left_y + mouth_y)
+    else:
+        overlay(frame, mouth_close, top_left_x + bw//2, top_left_y + mouth_y)
 
 # ======================
 # main loop
@@ -165,31 +190,32 @@ for i in range(N):
 
     frame = BG.copy()
 
-    # ================= A =================
-    ax, ay = center(A_X, A_Y, A_BASE)
+    # fallback：音量太大也允许说话（解决 B 不动嘴问题）
+    force_speak = states[i] == "open"
 
-    overlay(frame, A_BASE, ax, ay)
+    # A
+    draw_character(
+        frame,
+        A_BASE,
+        A_MOUTH_OPEN, A_MOUTH_CLOSE,
+        A_EYE_OPEN, A_EYE_CLOSE,
+        A_X, A_Y,
+        is_talking=(role == "A" and force_speak),
+        blink_arr=blink_A,
+        i=i
+    )
 
-    overlay(frame, A_MOUTH_CLOSE, ax, ay)
-    if role == "A" and states[i] == "open":
-        overlay(frame, A_MOUTH_OPEN, ax, ay)
-
-    eye = A_EYE_CLOSE if blink_A[i] else A_EYE_OPEN
-    overlay(frame, eye, ax - 10, ay - 60)
-    overlay(frame, eye, ax + 30, ay - 60)  # 右眼
-
-    # ================= B =================
-    bx, by = center(B_X, B_Y, B_BASE)
-
-    overlay(frame, B_BASE, bx, by)
-
-    overlay(frame, B_MOUTH_CLOSE, bx, by)
-    if role == "B" and states[i] == "open":
-        overlay(frame, B_MOUTH_OPEN, bx, by)
-
-    eye = B_EYE_CLOSE if blink_B[i] else B_EYE_OPEN
-    overlay(frame, eye, bx - 10, by - 60)
-    overlay(frame, eye, bx + 30, by - 60)  # 右眼
+    # B（修复关键点：允许 fallback）
+    draw_character(
+        frame,
+        B_BASE,
+        B_MOUTH_OPEN, B_MOUTH_CLOSE,
+        B_EYE_OPEN, B_EYE_CLOSE,
+        B_X, B_Y,
+        is_talking=(role == "B" and force_speak),
+        blink_arr=blink_B,
+        i=i
+    )
 
     cv2.imwrite(f"{OUTPUT_DIR}/frame_{i:04d}.png", frame)
 

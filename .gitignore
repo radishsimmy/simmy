@@ -1,11 +1,22 @@
+# Python cache
 __pycache__/
 *.pyc
 *.pyo
-*.pyd
 
-*.wav
+# logs / runtime
+*.log
+
+# dataset runtime files
+timeline.json
+tts_counter.json
+
+# temp outputs
 frames/
 output.mp4
 
-.env
-*.log
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
