@@ -174,34 +174,23 @@ def check_tts_server():
 # ======================
 
 def load_script():
-    """
-    加载剧本文件
-    
-    逻辑：
-    - 固定读取 stages/01_script/script.json
-    - 如果文件不存在，直接报错退出
-    - 不进行任何模板匹配或自动生成
-    """
+    """加载剧本文件"""
     script_file = SCRIPT_DIR / "script.json"
     
     if not script_file.exists():
-        print(f"❌ 错误：剧本文件不存在: {script_file}")
-        print(f"\n💡 请先使用 gen_script.py 生成剧本:")
-        print(f"   python gen_script.py --prompt \"你的剧本主题\"")
-        print(f"\n或者手动创建剧本文件，格式参考:")
-        print(f"""{{
-  "title": "剧本标题",
-  "dialogs": [
-    {{"id": "D001", "role": "A", "text": "第一句台词", "emotion": "正常"}},
-    {{"id": "D002", "role": "B", "text": "第二句台词", "emotion": "开心"}}
-  ]
-}}""")
+        print(f"❌ 错误：找不到剧本文件 {script_file}")
+        print("   请先运行 gen_script.py 生成剧本")
         sys.exit(1)
     
-    print(f"✅ 加载剧本: {script_file}")
+    print(f"📖 加载剧本: {script_file}")
     script_data = load_json(script_file)
+    
+    if not script_data or "dialogs" not in script_data:
+        print("❌ 错误：剧本文件格式无效")
+        sys.exit(1)
+    
     print(f"   标题: {script_data.get('title', '未命名')}")
-    print(f"   共 {len(script_data.get('dialogs', []))} 句台词")
+    print(f"   对话数: {len(script_data['dialogs'])}")
     
     return script_data
 
@@ -281,9 +270,41 @@ def generate_tts(text, role, emotion, output_file, max_retries=3):
     emotion_speed = EMOTION_CONFIG[emotion]["speed_factor"]
     final_speed = base_speed * emotion_speed
     
+    # ==================== 文本预处理（防止TTS截断）====================
+    # GPT-SoVITS在遇到多个强标点（？！）时可能提前截断
+    # 策略：保留最后一个标点，将前面的强标点替换为逗号
+    processed_text = text
+    
+    # 统计强标点数量
+    strong_punctuations = ["？", "?", "！", "!"]
+    punct_count = sum(text.count(p) for p in strong_punctuations)
+    
+    if punct_count > 1:
+        # 找到最后一个强标点的位置
+        last_punct_pos = -1
+        last_punct_char = ""
+        for punct in strong_punctuations:
+            pos = text.rfind(punct)
+            if pos > last_punct_pos:
+                last_punct_pos = pos
+                last_punct_char = punct
+        
+        # 如果找到了最后一个标点，替换前面的所有强标点为逗号
+        if last_punct_pos > 0:
+            before_last = text[:last_punct_pos]
+            after_last = text[last_punct_pos:]
+            
+            # 替换前面的问号和感叹号为逗号
+            before_last = before_last.replace("？", "，").replace("?", "，")
+            before_last = before_last.replace("！", "，").replace("!", "，")
+            
+            processed_text = before_last + after_last
+            
+            print(f"   📝 文本优化（防截断）: '{text}' → '{processed_text}'")
+    
     # 根据文本长度估算最小文件大小（经验公式）
     # 每个中文字符约需要 8000-12000 bytes
-    estimated_min_size = len(text) * 7000  # 保守估计
+    estimated_min_size = len(processed_text) * 7000  # 使用处理后的文本长度
     
     # 自动重试逻辑
     for attempt in range(1, max_retries + 1):
@@ -296,16 +317,17 @@ def generate_tts(text, role, emotion, output_file, max_retries=3):
         fixed_seed = int(hashlib.md5(seed_text.encode()).hexdigest(), 16) % (2**31)
         
         data = {
-            "text": text,
+            "text": processed_text,  # 使用处理后的文本（防止截断）
             "text_lang": "zh",
             "ref_audio_path": ref_audio_path,
             "prompt_text": prompt_text,
             "prompt_lang": "zh",
-            "top_k": 5,
-            "top_p": 1,
+            "top_k": 15,  # 增加top_k，让生成更连贯（从5增加到15）
+            "top_p": 0.85,  # 调整top_p，平衡连贯性和多样性（从1降到0.85）
             "temperature": EMOTION_CONFIG[emotion]["temperature"],
             "speed_factor": final_speed,
-            "seed": fixed_seed  # 使用固定但可变的种子
+            "seed": fixed_seed,  # 使用固定但可变的种子
+            "split_bucket": False  # 禁用分桶，避免句子被分割
         }
         
         print(f"   📤 调用TTS API...")
@@ -369,6 +391,32 @@ def generate_tts(text, role, emotion, output_file, max_retries=3):
                             print(f"   ❌ 错误：重试{max_retries}次后仍失败")
                             return None
                     
+                    # ==================== 检查音频是否被截断 ====================
+                    # 估算预期时长：中文语速约每秒3-5个字符
+                    estimated_duration_min = len(text) / 5.0  # 最慢语速
+                    estimated_duration_max = len(text) / 3.0  # 最快语速
+                    
+                    # 考虑情绪对语速的影响
+                    estimated_duration_min /= final_speed
+                    estimated_duration_max /= final_speed
+                    
+                    # 如果实际时长远小于预期，可能被截断了
+                    if duration < estimated_duration_min * 0.6:  # 低于预期的60%
+                        print(f"   ⚠️  警告：音频可能被截断！")
+                        print(f"      文本长度: {len(text)} 字符")
+                        print(f"      预期时长: {estimated_duration_min:.2f}s - {estimated_duration_max:.2f}s")
+                        print(f"      实际时长: {duration:.2f}s (过短)")
+                        
+                        if attempt < max_retries:
+                            print(f"      将更换种子重试...")
+                            try:
+                                Path(output_file).unlink()
+                            except:
+                                pass
+                            continue
+                        else:
+                            print(f"   ⚠️  警告：重试{max_retries}次后仍然过短，但将继续使用")
+                    
                     # 检查音量是否过低（正常音频RMS应在0.01-0.05之间）
                     # RMS < 0.005 通常是生成质量问题，需要重试
                     MIN_ACCEPTABLE_RMS = 0.005
@@ -388,7 +436,6 @@ def generate_tts(text, role, emotion, output_file, max_retries=3):
                     
                     print(f"   ✅ 音频验证通过 | 时长: {duration:.2f}s | RMS: {rms:.4f} | 尝试次数: {attempt}")
                     return output_file
-                    
                 except Exception as e:
                     print(f"   ⚠️  错误：读取生成的音频失败: {e}")
                     if attempt < max_retries:
@@ -434,51 +481,153 @@ def generate_tts(text, role, emotion, output_file, max_retries=3):
     return None
 
 
-def generate_actions_for_line(text, emotion):
-    """根据台词内容和情绪自动生成动作配置（简化版）"""
+def generate_actions_for_line(text, emotion, duration):
+    """
+    根据台词内容和情绪自动生成动作配置（增强版）
+    
+    支持的动作类型：
+    1. eye: 眼睛状态（睁大、眯眼等）
+    2. mouth: 嘴巴夸张程度（正常、张大、超大）
+    3. effect: 特效（问号、感叹号、震动线等）
+    4. camera: 运镜（缩放、平移）
+    5. shake: 角色抖动
+    
+    参数:
+        text: 台词文本
+        emotion: 情绪类型
+        duration: 音频时长（秒）
+    
+    返回:
+        动作列表
+    """
     actions = []
     
-    # 基础面部表情
-    face_map = {
-        "开心": "smile",
-        "生气": "shocked_mouth",
-        "悲伤": "sad_mouth",
-        "正常": "normal"
-    }
-    face_name = face_map.get(emotion, "normal")
-    actions.append({
-        "type": "face",
-        "name": face_name,
-        "start_offset": 0.0,
-        "duration": -1  # -1表示持续到该行结束
-    })
+    # ==================== 1. 眼睛状态控制 ====================
+    # 惊讶/震惊时，眼睛睁大并停留（增加持续时间）
+    if emotion == "惊讶" or any(word in text for word in ["震惊", "哇", "啊", "天哪"]):
+        actions.append({
+            "type": "eye",
+            "name": "wide_open",  # 睁大眼睛
+            "start_offset": 0.0,
+            "duration": min(1.2, duration * 0.4)  # 增加到1.2秒或时长的40%
+        })
     
-    # 根据关键词添加特效
-    if "？" in text or "???" in text:
+    # 生气时，眼睛眯起（增加持续时间）
+    elif emotion == "生气" and any(word in text for word in ["哼", "切", "就这"]):
+        actions.append({
+            "type": "eye",
+            "name": "narrow",  # 眪眼
+            "start_offset": 0.2,
+            "duration": min(0.8, duration * 0.3)  # 增加到0.8秒
+        })
+    
+    # ==================== 2. 嘴巴夸张程度 ====================
+    # 大声说话/喊叫时，嘴巴张大（增加持续时间）
+    if any(char in text for char in ["！", "!", "？", "?"]) and len(text) < 15:
+        # 短句+标点 = 可能是大喊
+        actions.append({
+            "type": "mouth",
+            "name": "extra_wide",  # 超大张嘴
+            "start_offset": 0.0,
+            "duration": min(0.6, duration * 0.2)  # 增加到0.6秒
+        })
+    
+    # ==================== 3. 特效叠加 ====================
+    # 问号特效（增加持续时间）
+    if "？" in text or "???" in text or "？？" in text:
         actions.append({
             "type": "effect",
             "name": "question_marks",
-            "start_offset": 0.1,
-            "duration": 0.5
+            "start_offset": 0.2,
+            "duration": 1.2,  # 从0.8增加到1.2秒
+            "position": "above_head"  # 头顶位置
         })
     
-    if "！" in text or "!" in text:
+    # 感叹号/震惊特效（增加持续时间）
+    if "！" in text or "!!!" in text or "！！" in text:
         actions.append({
             "type": "effect",
-            "name": "shock_lines",
+            "name": "exclamation_marks",
             "start_offset": 0.0,
-            "duration": 0.3
+            "duration": 1.0,  # 从0.6增加到1.0秒
+            "position": "above_head"
+        })
+        
+        # 震惊时添加震动线（增加持续时间）
+        if emotion in ["惊讶", "生气"]:
+            actions.append({
+                "type": "effect",
+                "name": "shock_lines",
+                "start_offset": 0.0,
+                "duration": 0.8,  # 从0.5增加到0.8秒
+                "intensity": "high"
+            })
+    
+    # 省略号特效（无语、思考，增加持续时间）
+    if "..." in text or "……" in text:
+        actions.append({
+            "type": "effect",
+            "name": "dots",
+            "start_offset": 0.3,
+            "duration": 1.5,  # 从1.0增加到1.5秒
+            "position": "side"
         })
     
-    # 简单运镜
-    if emotion in ["生气", "开心"]:
+    # ==================== 4. 运镜效果 ====================
+    # 仅在极度激动的情况下才添加运镜（严格控制触发条件）
+    # 必须同时满足：强烈情绪 + 短句 + 强烈标点
+    if emotion in ["生气", "惊讶"]:
+        # 必须包含强烈标点
+        has_strong_punctuation = any(char in text for char in ["！", "!", "？", "?"])
+        
+        # 必须是短句（情绪爆发通常是短句）
+        is_short = len(text) < 12
+        
+        # 只有同时满足才触发运镜
+        if has_strong_punctuation and is_short:
+            zoom_duration = min(0.5, duration * 0.25)
+            actions.append({
+                "type": "camera",
+                "name": "zoom_in",
+                "value": 1.15,  # 放大15%
+                "start_offset": 0.0,
+                "duration": zoom_duration,
+                "easing": "ease-out"
+            })
+            
+            # 快速拉回
+            actions.append({
+                "type": "camera",
+                "name": "zoom_out",
+                "value": 1.0,  # 恢复原大小
+                "start_offset": zoom_duration,
+                "duration": 0.3,
+                "easing": "ease-in"
+            })
+    
+    # ==================== 5. 角色抖动 ====================
+    # 极度生气时抖动
+    if emotion == "生气" and any(word in text for word in ["气死", "混蛋", "可恶"]):
         actions.append({
-            "type": "camera",
-            "name": "zoom",
-            "value": 1.1,
+            "type": "shake",
+            "intensity": 5,  # 抖动强度（像素）
+            "frequency": 10,  # 频率（Hz）
             "start_offset": 0.0,
-            "duration": 0.5,
-            "easing": "ease-out"
+            "duration": min(0.5, duration * 0.2)
+        })
+    
+    # ==================== 6. 关键词触发的特殊动作 ====================
+    # "看"相关词汇 → 指向动作（未来可扩展）
+    if any(word in text for word in ["看", "瞧", "注意"]):
+        pass  # TODO: 添加指向手势
+    
+    # "笑"相关词汇 → 大笑动作
+    if any(word in text for word in ["哈哈", "嘿嘿", "嘻嘻"]):
+        actions.append({
+            "type": "face",
+            "name": "laughing",  # 大笑表情
+            "start_offset": 0.1,
+            "duration": min(0.6, duration * 0.25)
         })
     
     return actions
@@ -546,7 +695,7 @@ def stage2_generate_all(script_data):
             continue
         
         # 生成动作配置
-        actions = generate_actions_for_line(text, emotion)
+        actions = generate_actions_for_line(text, emotion, duration)
         
         # 构建时间轴条目
         line_data = {
@@ -580,23 +729,45 @@ def stage2_generate_all(script_data):
         role_count[role] = role_count.get(role, 0) + 1
     print(f"   角色统计: {role_count}")
     
-    # 合并音频
-    merge_audio_files(audio_files, lines_for_merge)
+    # 合并音频（会返回实际的时间偏移信息）
+    actual_timings = merge_audio_files(audio_files, lines_for_merge)
+    
+    # ==================== 根据实际音频时长重新校准时间轴 ====================
+    if actual_timings:
+        print("\n   🔄 根据实际音频重新校准时间轴...")
+        
+        for idx, line in enumerate(timeline_data["lines"]):
+            if idx < len(actual_timings):
+                actual_start, actual_duration = actual_timings[idx]
+                line["start"] = round(actual_start, 3)
+                line["end"] = round(actual_start + actual_duration, 3)
+                line["duration"] = round(actual_duration, 3)
+        
+        # 保存校准后的时间轴
+        save_json(AUDIO_DIR / "timeline.json", timeline_data)
+        print(f"   ✅ 时间轴已重新校准")
     
     return timeline_data
 
 
 def merge_audio_files(audio_files, lines_data):
-    """合并所有音频文件，并应用音量归一化"""
+    """
+    合并所有音频文件，并应用音量归一化，随机添加背景音效
+    
+    返回:
+        list of tuples: [(start_time, duration), ...] 每句台词的实际起始时间和时长
+    """
     print("\n🎧 合并音频...")
     
     if not audio_files:
         print("❌ 没有音频可合并")
-        return
+        return []
     
     merged_audio = []
     sample_rate = None
     all_segments = []  # 存储所有音频片段及其角色信息
+    actual_timings = []  # 记录每句台词的实际时间
+    current_time = 0.0  # 当前累计时间（秒）
     
     # 第一遍：读取所有音频并应用角色增益
     print("   📊 处理音频片段...")
@@ -644,8 +815,28 @@ def merge_audio_files(audio_files, lines_data):
         target_rms = TARGET_RMS
         print(f"\n   ⚠️  无法计算目标音量，使用配置值: {target_rms}")
     
-    # 第三遍：应用归一化并合并
-    print("   🔧 应用归一化并合并...")
+    # 加载音效素材（用于随机插入）
+    sfx_dir = RES_DIR / "sfx"
+    sfx_files = list(sfx_dir.glob("*.wav"))
+    sfx_samples = {}
+    if sfx_files:
+        print(f"\n   🔊 加载音效素材: {len(sfx_files)} 个")
+        for sfx_file in sfx_files:
+            try:
+                sfx_audio, sfx_sr = sf.read(str(sfx_file))
+                if len(sfx_audio.shape) > 1:
+                    sfx_audio = sfx_audio.mean(axis=1)
+                # 重采样到目标采样率
+                if sfx_sr != sample_rate:
+                    import librosa
+                    sfx_audio = librosa.resample(sfx_audio, orig_sr=sfx_sr, target_sr=sample_rate)
+                sfx_samples[sfx_file.stem] = sfx_audio
+                print(f"      ✅ {sfx_file.name}")
+            except Exception as e:
+                print(f"      ⚠️  加载失败 {sfx_file.name}: {e}")
+    
+    # 第三遍：应用归一化并合并，随机插入音效
+    print("\n   🔧 应用归一化、插入音效并合并...")
     for i, seg in enumerate(all_segments):
         audio = seg["audio"]
         current_rms = seg["rms"]
@@ -671,8 +862,43 @@ def merge_audio_files(audio_files, lines_data):
         if i > 0:
             silence = [0.0] * int(sample_rate * SILENCE_GAP)
             merged_audio.extend(silence)
+            current_time += SILENCE_GAP  # 更新当前时间
         
+        # 记录该句台词的起始时间（在插入音效之前）
+        line_start_time = current_time
+        
+        # 随机插入音效（30%概率，在台词开始前）
+        sfx_duration = 0.0
+        if sfx_samples and random.random() < 0.3:
+            sfx_name = random.choice(list(sfx_samples.keys()))
+            sfx_audio = sfx_samples[sfx_name]
+            
+            # 降低音效音量，避免盖过语音
+            sfx_volume = 0.15
+            sfx_audio = sfx_audio * sfx_volume
+            
+            # 计算音效时长
+            sfx_duration = len(sfx_audio) / sample_rate
+            
+            # 在台词前插入短促静音和音效
+            pre_silence = [0.0] * int(sample_rate * 0.1)  # 100ms前置静音
+            merged_audio.extend(pre_silence)
+            merged_audio.extend(sfx_audio)
+            
+            post_silence = [0.0] * int(sample_rate * 0.05)  # 50ms后置静音
+            merged_audio.extend(post_silence)
+            
+            current_time += 0.1 + sfx_duration + 0.05  # 更新当前时间
+            
+            print(f"      🎵 插入音效: {sfx_name}.wav (时长:{sfx_duration:.2f}s)")
+        
+        # 添加台词音频
         merged_audio.extend(audio)
+        audio_duration = len(audio) / sample_rate
+        current_time += audio_duration  # 更新当前时间
+        
+        # 记录该句的实际起始时间和时长
+        actual_timings.append((line_start_time, audio_duration))
     
     # 保存合并后的音频
     output_file = AUDIO_DIR / "merged_audio.wav"
@@ -689,6 +915,13 @@ def merge_audio_files(audio_files, lines_data):
     
     if final_rms < 0.01:
         print(f"   ⚠️  警告：整体音量偏低，建议在视频编辑软件中后期增强")
+    
+    # 返回实际的时间信息，用于校准时间轴
+    print(f"\n   📊 实际时间统计:")
+    for idx, (start, dur) in enumerate(actual_timings):
+        print(f"      [{idx+1}] start={start:.3f}s, duration={dur:.3f}s")
+    
+    return actual_timings
 
 
 def regenerate_single_line(dialog_id):
@@ -756,6 +989,104 @@ def regenerate_single_line(dialog_id):
 # ======================
 # Stage 3: 帧渲染
 # ======================
+
+def get_active_actions(timeline_line, current_time):
+    """
+    获取当前时间点生效的所有动作
+    
+    参数:
+        timeline_line: 时间轴中的一行数据（包含actions列表）
+        current_time: 当前时间（秒）
+    
+    返回:
+        字典，按类型分组的活跃动作
+        {
+            "face": [{"name": "angry", ...}],
+            "eye": [{"name": "wide_open", ...}],
+            "mouth": [{"name": "extra_wide", ...}],
+            "effect": [...],
+            "camera": [...],
+            "shake": [...]
+        }
+    """
+    if not timeline_line or "actions" not in timeline_line:
+        return {}
+    
+    active = {}
+    line_start = timeline_line["start"]
+    
+    for action in timeline_line["actions"]:
+        start_offset = action.get("start_offset", 0.0)
+        duration = action.get("duration", -1)
+        
+        # 计算绝对时间
+        action_start = line_start + start_offset
+        if duration == -1:
+            # 持续到行结束
+            action_end = timeline_line["end"]
+        else:
+            action_end = action_start + duration
+        
+        # 检查当前时间是否在动作有效期内
+        if action_start <= current_time < action_end:
+            action_type = action.get("type")
+            if action_type not in active:
+                active[action_type] = []
+            active[action_type].append(action)
+    
+    return active
+
+
+def apply_camera_effect(frame, camera_actions):
+    """应用运镜效果"""
+    if not camera_actions:
+        return frame, 1.0
+    
+    # 取最后一个相机动作（优先级最高）
+    latest_camera = camera_actions[-1]
+    camera_name = latest_camera.get("name", "")
+    
+    if camera_name == "zoom_in":
+        scale = latest_camera.get("value", 1.15)
+    elif camera_name == "zoom_out":
+        scale = latest_camera.get("value", 1.0)
+    else:
+        return frame, 1.0
+    
+    # 简单的缩放实现（居中缩放）
+    h, w = frame.shape[:2]
+    new_h, new_w = int(h / scale), int(w / scale)
+    
+    # 裁剪中心区域
+    start_y = (h - new_h) // 2
+    start_x = (w - new_w) // 2
+    
+    cropped = frame[start_y:start_y+new_h, start_x:start_x+new_w]
+    
+    # 缩放回原尺寸
+    zoomed = cv2.resize(cropped, (w, h))
+    
+    return zoomed, scale
+
+
+def apply_shake_effect(x, y, shake_actions, frame_index):
+    """应用抖动效果"""
+    if not shake_actions:
+        return x, y
+    
+    # 取强度最高的抖动
+    strongest = max(shake_actions, key=lambda a: a.get("intensity", 0))
+    intensity = strongest.get("intensity", 5)
+    frequency = strongest.get("frequency", 10)
+    
+    # 基于帧索引和频率计算偏移
+    import math
+    offset_x = int(intensity * math.sin(2 * math.pi * frequency * frame_index / FPS))
+    offset_y = int(intensity * math.cos(2 * math.pi * frequency * frame_index / FPS))
+    
+    return x + offset_x, y + offset_y
+
+
 def load_image(p):
     """加载图片，如果不存在返回None"""
     img = cv2.imread(str(p), cv2.IMREAD_UNCHANGED)
@@ -801,9 +1132,14 @@ def blink(n):
     return arr
 
 
-def draw_character(frame, base, mouth_open, mouth_close, eye_open, eye_close,
-                   x, y, is_talking, blink_arr, i, mouth_threshold=0.15):
-    """绘制角色（支持口型同步）"""
+def draw_character_with_actions(frame, base, mouth_open, mouth_close, eye_open, eye_close,
+                                x, y, is_talking, blink_arr, i, active_actions=None):
+    """
+    绘制角色（支持动作系统）
+    
+    参数:
+        active_actions: 当前生效的动作字典
+    """
     if base is None:
         return
     
@@ -814,55 +1150,103 @@ def draw_character(frame, base, mouth_open, mouth_close, eye_open, eye_close,
     # 绘制基础身体
     overlay(frame, base, top_left_x, top_left_y)
     
-    # 五官位置（根据实际角色图片调整）
-    # 调整说明：
-    # - eye_y: 眼睛垂直位置（从顶部算起的比例），值越小越靠上
-    # - mouth_y: 嘴巴垂直位置，值越小越靠上
-    # - eye_offset_x: 眼睛水平偏移（负数向左，正数向右）
-    # - mouth_offset_x: 嘴巴水平偏移（负数向左，正数向右）
-    eye_y = int(bh * 0.35)      # 从0.58调整为0.35，眼睛上移
-    mouth_y = int(bh * 0.55)    # 从0.75调整为0.55，嘴巴上移
-    eye_offset_x = -12          # 眼睛水平偏移
-    mouth_offset_x = -20        # 嘴巴水平偏移
-    eye_dx = int(bw * 0.15)     # 两眼间距
+    # ==================== 五官位置（基于矩形base.png）====================
+    # 对于矩形base.png（200x300），五官位置计算：
+    # - 头部区域：矩形上部约70像素（35%）
+    # - 眼睛：在头部区域的中间偏上
+    # - 嘴巴：在头部区域的底部
     
-    # 调试信息：打印实际坐标
-    if i == 0:  # 只在第一帧打印，避免刷屏
-        print(f"   📍 角色定位调试 | 身体尺寸: {bw}x{bh}")
-        print(f"      眼睛位置: y={top_left_y + eye_y}, 偏移={eye_offset_x}")
-        print(f"      嘴巴位置: y={top_left_y + mouth_y}, 偏移={mouth_offset_x}")
+    head_height = int(bh * 0.35)  # 头部高度约105像素 (300 * 0.35)
+    head_top = top_left_y + 15  # 头部顶部（留出边距）
     
-    # 绘制眼睛
-    eye_img = eye_close if blink_arr[i] else eye_open
-    if eye_img is not None:
-        overlay(frame, eye_img, top_left_x + bw//2 - eye_dx + eye_offset_x, top_left_y + eye_y)
-        overlay(frame, eye_img, top_left_x + bw//2 + eye_dx + eye_offset_x, top_left_y + eye_y)
+    # 眼睛位置：头部区域的35%处（更靠上）
+    eye_y = head_top + int(head_height * 0.35)
+    eye_dx = int(bw * 0.20)  # 两眼间距约40像素 (200 * 0.20)
     
-    # 绘制嘴巴
-    if is_talking:
-        mouth_img = mouth_open
-    else:
-        mouth_img = mouth_close
+    # 嘴巴位置：头部区域的85%处（接近下巴）
+    mouth_y = head_top + int(head_height * 0.85)
     
-    if mouth_img is not None:
-        overlay(frame, mouth_img, top_left_x + bw//2 + mouth_offset_x, top_left_y + mouth_y)
+    # 统一水平居中偏移
+    center_x = top_left_x + bw // 2
+    
+    # ==================== 眼睛状态 ====================
+    # 默认：眨眼或睁眼
+    default_eye = eye_close if blink_arr[i] else eye_open
+    
+    # 检查是否有特殊眼睛动作
+    if active_actions and "eye" in active_actions:
+        eye_action = active_actions["eye"][-1]  # 取最后一个
+        eye_name = eye_action.get("name", "")
+        
+        # 根据眼睛名称加载对应图片
+        if eye_name == "wide_open":
+            # 尝试加载睁大眼睛素材
+            wide_eye_path = Path(__file__).parent / "res" / "characters" / ("A" if "A" in str(base) else "B") / "eye" / "surprised.png"
+            wide_eye = load_image(wide_eye_path)
+            if wide_eye is not None:
+                default_eye = wide_eye
+    
+    # 绘制眼睛（居中对齐）
+    if default_eye is not None:
+        overlay(frame, default_eye, center_x - eye_dx - int(default_eye.shape[1]//2), eye_y - int(default_eye.shape[0]//2))
+        overlay(frame, default_eye, center_x + eye_dx - int(default_eye.shape[1]//2), eye_y - int(default_eye.shape[0]//2))
+    
+    # ==================== 嘴巴状态 ====================
+    # 默认：说话时张嘴
+    default_mouth = mouth_open if is_talking else mouth_close
+    
+    # 检查是否有特殊嘴巴动作
+    if active_actions and "mouth" in active_actions:
+        mouth_action = active_actions["mouth"][-1]
+        mouth_name = mouth_action.get("name", "")
+        
+        if mouth_name == "extra_wide":
+            # 尝试加载超大张嘴素材
+            extra_wide_path = Path(__file__).parent / "res" / "characters" / ("A" if "A" in str(base) else "B") / "mouth" / "extra_wide.png"
+            extra_wide = load_image(extra_wide_path)
+            if extra_wide is not None:
+                default_mouth = extra_wide
+    
+    # 绘制嘴巴（水平居中）
+    if default_mouth is not None:
+        overlay(frame, default_mouth, center_x - int(default_mouth.shape[1]//2), mouth_y - int(default_mouth.shape[0]//2))
 
 
-def render_frames(timeline_data, target_lines=None):
-    """渲染帧序列
-    
-    Args:
-        timeline_data: 时间轴数据
-        target_lines: 指定要渲染的行ID列表，None表示渲染所有行
-    """
+def render_frames():
+    """渲染所有帧（支持动作系统）"""
     print("\n【Stage 3】渲染帧序列...")
     
-    # 加载背景
-    bg_file = RES_DIR / "bg" / "office.png"
-    BG = load_image(bg_file)
+    # 加载时间轴
+    timeline_data = load_json(AUDIO_DIR / "timeline.json")
+    if not timeline_data or "lines" not in timeline_data:
+        print("❌ 时间轴文件无效")
+        return
+    
+    # 加载背景图（尝试多个可能的路径）
+    bg_candidates = [
+        RES_DIR / "background.png",
+        RES_DIR / "bg" / "office.png",
+        RES_DIR / "bg" / "default.png",
+    ]
+    
+    BG = None
+    for bg_file in bg_candidates:
+        if bg_file.exists():
+            BG = cv2.imread(str(bg_file))
+            if BG is not None:
+                print(f"   ✅ 使用背景图: {bg_file}")
+                break
+    
     if BG is None:
-        print(f"⚠️ 警告：找不到背景图 {bg_file}，使用默认背景")
+        print(f"   ⚠️ 警告：找不到背景图，使用渐变蓝色背景")
+        # 创建渐变蓝色背景（从上到下的渐变）
         BG = np.zeros((720, 1280, 3), dtype=np.uint8)
+        for i in range(720):
+            # 从浅蓝到深蓝的渐变
+            blue_value = int(150 + (i / 720) * 105)  # 150-255
+            green_value = int(100 + (i / 720) * 50)   # 100-150
+            red_value = int(50 + (i / 720) * 50)      # 50-100
+            BG[i, :] = [red_value, green_value, blue_value]
     
     if BG.shape[2] == 4:
         BG = BG[:, :, :3]
@@ -874,6 +1258,49 @@ def render_frames(timeline_data, target_lines=None):
     audio, sr = sf.read(str(audio_file))
     if len(audio.shape) > 1:
         audio = audio.mean(axis=1)
+    
+    # ==================== 去除前端静音（关键修复）====================
+    # TTS生成的音频开头可能有静音，导致音画不同步
+    # 检测并去除开头的静音部分
+    
+    # 计算短时能量
+    frame_length = int(sr * 0.02)  # 20ms帧长
+    hop_length = int(sr * 0.01)    # 10ms跳步
+    
+    # 找到第一个非静音帧
+    silence_threshold = 0.001  # 静音阈值
+    first_speech_frame = 0
+    
+    for i in range(0, min(len(audio), sr * 2), hop_length):  # 只检查前2秒
+        frame = audio[i:i+frame_length]
+        if len(frame) == 0:
+            break
+        energy = np.sqrt(np.mean(frame**2))
+        if energy > silence_threshold:
+            first_speech_frame = i
+            break
+    
+    # 如果检测到前端静音，裁剪掉
+    if first_speech_frame > 0:
+        silence_duration = first_speech_frame / sr
+        print(f"   ⚠️  检测到前端静音: {silence_duration:.3f}s，正在裁剪...")
+        audio = audio[first_speech_frame:]
+        
+        # 同时需要调整timeline.json中的所有时间戳
+        timeline_data = load_json(AUDIO_DIR / "timeline.json")
+        time_offset = silence_duration
+        
+        for line in timeline_data["lines"]:
+            line["start"] = round(line["start"] - time_offset, 3)
+            line["end"] = round(line["end"] - time_offset, 3)
+            # 确保时间不为负
+            if line["start"] < 0:
+                line["start"] = 0.0
+            if line["end"] < 0:
+                line["end"] = 0.0
+        
+        save_json(AUDIO_DIR / "timeline.json", timeline_data)
+        print(f"   ✅ 已调整时间轴，偏移量: -{time_offset:.3f}s")
     
     step = int(sr * FRAME_DURATION)
     vols = []
@@ -915,51 +1342,91 @@ def render_frames(timeline_data, target_lines=None):
     blink_A = blink(N)
     blink_B = blink(N)
     
-    # 确定要渲染的行
-    if target_lines:
-        lines_to_render = [l for l in timeline_data["lines"] if l["dialog_id"] in target_lines]
-        print(f"  增量渲染: {target_lines}")
-    else:
-        lines_to_render = timeline_data["lines"]
-        print(f"  全量渲染: {len(lines_to_render)} 行")
-    
-    # 构建 dialog_id -> 行的映射
-    line_map = {l["dialog_id"]: l for l in timeline_data["lines"]}
+    # 创建帧索引
+    frame_index = {}
     
     # 逐帧渲染
-    frame_index = {}
+    print(f"   开始渲染 {N} 帧...")
     for i in range(N):
-        t = i / FPS
+        t = i * FRAME_DURATION
         
-        # 确定当前说话的角色
+        # 确定当前台词
         current_role = None
+        current_line = None
         for line in timeline_data["lines"]:
             if line["start"] <= t < line["end"]:
                 current_role = line["role"]
+                current_line = line
                 break
         
         # 创建新帧
         frame = BG.copy()
         
+        # ==================== 应用运镜效果 ====================
+        # 默认不缩放
+        scale = 1.0
+        
+        if current_line:
+            active_actions = get_active_actions(current_line, t)
+            camera_actions = active_actions.get("camera", [])
+            
+            # 只有当有camera动作时才应用缩放
+            if camera_actions:
+                frame, scale = apply_camera_effect(frame, camera_actions)
+        
+        # 根据缩放调整角色位置（仅在缩放时调整）
+        A_X_scaled = int(A_X * scale)
+        B_X_scaled = int(B_X * scale)
+        A_Y_scaled = int(A_Y * scale)
+        B_Y_scaled = int(A_Y * scale)
+        
+        # ==================== 获取A角色的活跃动作 ====================
+        active_actions_A = {}
+        if current_line and current_role == "A":
+            active_actions_A = get_active_actions(current_line, t)
+        
+        # 应用抖动效果
+        A_X_final, A_Y_final = apply_shake_effect(A_X_scaled, A_Y_scaled, 
+                                                   active_actions_A.get("shake", []), i)
+        
         # 绘制角色A
         force_speak_A = states[i] == "open" if current_role == "A" else False
-        draw_character(
+        draw_character_with_actions(
             frame, char_A["base"], char_A["mouth_open"], char_A["mouth_close"],
             char_A["eye_open"], char_A["eye_close"],
-            A_X, A_Y, force_speak_A, blink_A, i
+            A_X_final, A_Y_final, force_speak_A, blink_A, i,
+            active_actions=active_actions_A
         )
+        
+        # ==================== 获取B角色的活跃动作 ====================
+        active_actions_B = {}
+        if current_line and current_role == "B":
+            active_actions_B = get_active_actions(current_line, t)
+        
+        # 应用抖动效果
+        B_X_final, B_Y_final = apply_shake_effect(B_X_scaled, B_Y_scaled,
+                                                   active_actions_B.get("shake", []), i)
         
         # 绘制角色B
         force_speak_B = states[i] == "open" if current_role == "B" else False
-        draw_character(
+        draw_character_with_actions(
             frame, char_B["base"], char_B["mouth_open"], char_B["mouth_close"],
             char_B["eye_open"], char_B["eye_close"],
-            B_X, B_Y, force_speak_B, blink_B, i
+            B_X_final, B_Y_final, force_speak_B, blink_B, i,
+            active_actions=active_actions_B
         )
+        
+        # ==================== 渲染特效层 ====================
+        # TODO: 这里可以添加特效渲染逻辑（问号、感叹号等）
+        # 需要加载特效图片并叠加到frame上
         
         # 保存帧
         frame_file = FRAMES_DIR / "frames" / f"frame_{i:04d}.png"
         cv2.imwrite(str(frame_file), frame)
+        
+        # 进度提示（每100帧）
+        if i % 100 == 0:
+            print(f"     渲染进度: {i}/{N} ({i*100//N}%)")
     
     # 构建帧索引
     for line in timeline_data["lines"]:
@@ -985,122 +1452,120 @@ def render_frames(timeline_data, target_lines=None):
 # ======================
 # Stage 4: 视频合成
 # ======================
+def generate_subtitle_file(timeline_data):
+    """生成SRT字幕文件"""
+    print("\n  📝 生成字幕文件...")
+    
+    subtitle_file = AUDIO_DIR / "subtitles.srt"
+    
+    with open(subtitle_file, 'w', encoding='utf-8') as f:
+        idx = 1
+        for line in timeline_data["lines"]:
+            start_time = line["start"]
+            end_time = line["end"]
+            
+            # 转换为SRT时间格式 (HH:MM:SS,mmm)
+            def format_srt_time(seconds):
+                hours = int(seconds // 3600)
+                minutes = int((seconds % 3600) // 60)
+                secs = int(seconds % 60)
+                millis = int((seconds % 1) * 1000)
+                return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+            
+            start_str = format_srt_time(start_time)
+            end_str = format_srt_time(end_time)
+            
+            # 写入字幕块
+            f.write(f"{idx}\n")
+            f.write(f"{start_str} --> {end_str}\n")
+            f.write(f"{line['text']}\n\n")
+            
+            idx += 1
+    
+    print(f"  ✅ 字幕文件已生成: {subtitle_file}")
+    return subtitle_file
+
+
 def assemble_video():
-    """合成最终视频"""
+    """合成最终视频（带字幕）"""
     print("\n【Stage 4】合成视频...")
     
     frames_pattern = str(FRAMES_DIR / "frames" / "frame_%04d.png")
     audio_file = AUDIO_DIR / "merged_audio.wav"
     output_file = PROJECT_ROOT / "output.mp4"
     
+    # 加载timeline数据以生成字幕
+    timeline_data = load_json(AUDIO_DIR / "timeline.json")
+    subtitle_file = generate_subtitle_file(timeline_data)
+    
+    # FFmpeg命令：添加字幕滤镜
     cmd = [
         "ffmpeg", "-y",
         "-framerate", str(FPS),
         "-i", frames_pattern,
         "-i", str(audio_file),
-        "-vf", "scale=trunc(iw/2)*2:trunc(ih/2)*2",
+        "-vf", f"scale=trunc(iw/2)*2:trunc(ih/2)*2,subtitles={subtitle_file}:force_style='FontName=SimHei,FontSize=24,PrimaryColour=&H00FFFFFF,OutlineColour=&H00000000,Outline=2,Shadow=1,Alignment=2,MarginV=30'",
         "-c:v", "libx264",
         "-pix_fmt", "yuv420p",
         "-c:a", "aac",
+        "-b:a", "192k",
         "-shortest",
         str(output_file)
     ]
     
-    print("  执行 FFmpeg 命令...")
+    print(f"   执行FFmpeg命令...")
     result = subprocess.run(cmd, capture_output=True, text=True)
     
-    if result.returncode == 0:
-        print(f"✅ 视频合成完成: {output_file}")
-    else:
-        print(f"❌ 视频合成失败")
+    if result.returncode != 0:
+        print(f"❌ FFmpeg错误:")
         print(result.stderr)
+        return
+    
+    print(f"\n✅ 视频合成完成: {output_file}")
+    print(f"   时长: {len(load_json(AUDIO_DIR / 'timeline.json')['lines'])} 句台词")
 
 
 # ======================
-# 命令行接口
+# 主流程控制
 # ======================
+def run_stage(stage_name):
+    """运行指定阶段"""
+    stage_map = {
+        "stage1": lambda: None,  # 剧本已存在
+        "stage2": lambda: stage2_generate_all(load_script()),
+        "stage3": render_frames,
+        "stage4": assemble_video,
+    }
+    
+    if stage_name not in stage_map:
+        print(f"❌ 未知阶段: {stage_name}")
+        print(f"可用阶段: {', '.join(stage_map.keys())}")
+        return
+    
+    print(f"\n{'='*60}")
+    print(f"开始执行: {stage_name}")
+    print('='*60)
+    
+    stage_map[stage_name]()
+
+
 def main():
-    parser = argparse.ArgumentParser(description="沙雕动画工业化流程")
-    subparsers = parser.add_subparsers(dest="command", help="可用命令")
+    """主函数"""
+    import sys
     
-    # init
-    parser_init = subparsers.add_parser("init", help="初始化项目目录")
+    if len(sys.argv) < 2:
+        print("用法: python pipeline.py <stage>")
+        print("可用阶段: stage1, stage2, stage3, stage4, run-all")
+        return
     
-    # stage1: 生成剧本
-    parser_stage1 = subparsers.add_parser("stage1", help="生成剧本")
-    parser_stage1.add_argument("--topic", type=str, help="剧本主题")
+    command = sys.argv[1]
     
-    # stage2: 生成音频和动作
-    parser_stage2 = subparsers.add_parser("stage2", help="生成音频和动作配置")
-    
-    # stage3: 渲染帧
-    parser_stage3 = subparsers.add_parser("stage3", help="渲染帧序列")
-    parser_stage3.add_argument("--line", type=str, nargs="+", help="指定要渲染的行ID")
-    
-    # stage4: 合成视频
-    parser_stage4 = subparsers.add_parser("stage4", help="合成视频")
-    
-    # regenerate-line: 重新生成单句
-    parser_regen = subparsers.add_parser("regenerate-line", help="重新生成单句台词")
-    parser_regen.add_argument("--line", type=str, required=True, help="行ID")
-    
-    # run-all: 一键运行全流程
-    parser_runall = subparsers.add_parser("run-all", help="一键运行全流程")
-    # 移除 --topic 参数，因为不再支持自动生成剧本
-    
-    args = parser.parse_args()
-    
-    if args.command == "init":
-        ensure_dirs()
-    
-    elif args.command == "stage1":
-        print("❌ 错误：stage1 命令已废弃")
-        print("   请使用 gen_script.py 生成剧本:")
-        print("   python gen_script.py --prompt \"你的剧本主题\"")
-        sys.exit(1)
-    
-    elif args.command == "stage2":
-        script_data = load_script()  # 改为load_script
-        stage2_generate_all(script_data)
-    
-    elif args.command == "stage3":
-        timeline_data = load_json(AUDIO_DIR / "timeline.json")
-        render_frames(timeline_data, target_lines=args.line)
-    
-    elif args.command == "stage4":
-        assemble_video()
-    
-    elif args.command == "regenerate-line":
-        regenerate_single_line(args.line)
-        # 自动重新渲染和合成
-        timeline_data = load_json(AUDIO_DIR / "timeline.json")
-        render_frames(timeline_data, target_lines=[args.line])
-        assemble_video()
-    
-    elif args.command == "run-all":
-        print("=" * 60)
-        print("🎬 开始完整流程")
-        print("=" * 60)
-        
-        ensure_dirs()
-        script_data = load_script()  # 改为load_script，移除topic参数
-        
-        # 加载现有剧本后直接继续，无需人工确认
-        print("\n✅ 剧本加载成功，开始后续流程...\n")
-
-        stage2_generate_all(script_data)
-        
-        timeline_data = load_json(AUDIO_DIR / "timeline.json")
-        render_frames(timeline_data)
-        
-        assemble_video()
-        
-        print("\n" + "=" * 60)
-        print("🎉 全部完成！请查看 output.mp4")
-        print("=" * 60)
-    
+    if command == "run-all":
+        run_stage("stage2")
+        run_stage("stage3")
+        run_stage("stage4")
     else:
-        parser.print_help()
+        run_stage(command)
 
 
 if __name__ == "__main__":
