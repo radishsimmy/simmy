@@ -12,8 +12,8 @@ import subprocess
 FPS = 25
 FRAME_DURATION = 1.0 / FPS
 
-AUDIO_PATH = "audio.wav"
-TIMELINE_PATH = "timeline.json"
+AUDIO_PATH = "audio/audio.wav"
+TIMELINE_PATH = "audio/timeline.json"
 
 OUTPUT_DIR = "frames"
 os.makedirs(OUTPUT_DIR, exist_ok=True)

@@ -10,21 +10,21 @@ API_URL = "http://127.0.0.1:9880/tts"
 ROLE_CONFIG = {
     "A": {
         "正常": {
-            "ref_audio": "ref_a_normal.wav",
+            "ref_audio": "res/ref/ref_a_normal.wav",
             "prompt_text": "盼望着，盼望着，东风来了。春天的脚步近了。"
         },
         "开心": {
-            "ref_audio": "ref_a_happy.wav",
+            "ref_audio": "res/ref/ref_a_happy.wav",
             "prompt_text": "今天真开心啊！感觉一切都很美好！"
         },
         "生气": {
-            "ref_audio": "ref_a_angry.wav",
+            "ref_audio": "res/ref/ref_a_angry.wav",
             "prompt_text": "你到底在干什么！我真的很生气！"
         }
     },
     "B": {
         "正常": {
-            "ref_audio": "ref_b_normal.wav",
+            "ref_audio": "res/ref/ref_b_normal.wav",
             "prompt_text": "生活或许是一地鸡毛，但浪漫让我们学会，用这些鸡毛，扎一个会飞的毽子。"
         }
     }
@@ -78,7 +78,7 @@ def generate_tts(text, role, emotion):
         response = requests.post(API_URL, json=data, timeout=60)
         if response.status_code == 200:
             seq = get_next_seq(role)
-            filename = f"{role}_{seq}.wav"
+            filename = f"audio/{role}_{seq}.wav"
             with open(filename, "wb") as f:
                 f.write(response.content)
             print(f"__FILE__:{filename}")

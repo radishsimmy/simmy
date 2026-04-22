@@ -27,7 +27,7 @@ def run_tts(text, role, emotion):
 # ======================
 # ⭐ 新增：合成音频
 # ======================
-def merge_audio(audio_files, output="audio.wav", gap=0.3):
+def merge_audio(audio_files, output="audio/audio.wav", gap=0.3):
 
     if len(audio_files) == 0:
         print("❌ 没有音频可合成")
@@ -114,10 +114,10 @@ def main():
     print("\n音频顺序：", audio_files)
 
     # ===== 保存 timeline =====
-    with open("timeline.json", "w", encoding="utf-8") as f:
+    with open("audio/timeline.json", "w", encoding="utf-8") as f:
         json.dump(timeline, f, indent=2, ensure_ascii=False)
 
-    print("\n📌 timeline 已生成：timeline.json")
+    print("\n📌 timeline 已生成：audio/timeline.json")
 
     # ⭐⭐ 核心新增：合成 audio.wav
     merge_audio(audio_files)
