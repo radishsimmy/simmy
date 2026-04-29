@@ -1,0 +1,18 @@
+{
+  "face_direction": "side_right",
+  "features": {
+    "eye": {
+      "visible_count": 1,
+      "position": {
+        "x_ratio": 0.35,
+        "y_ratio": 0.35
+      }
+    },
+    "mouth": {
+      "position": {
+        "x_ratio": 0.3,
+        "y_ratio": 0.55
+      }
+    }
+  }
+}

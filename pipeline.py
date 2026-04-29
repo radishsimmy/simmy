@@ -39,6 +39,48 @@ AUDIO_DIR = STAGES_DIR / "02_audio"
 FRAMES_DIR = STAGES_DIR / "03_frames"
 RES_DIR = PROJECT_ROOT / "res"
 
+
+def load_character_config(role_name, camera_angle="front"):
+    """
+    加载角色配置文件
+    
+    参数:
+        role_name: 角色名称（如 "A", "B"）
+        camera_angle: 拍摄角度（如 "front", "side_left", "side_right"）
+    
+    返回:
+        配置字典，包含脸型方向和五官位置信息
+    """
+    # 如果是正脸，直接加载角色的config.json
+    if camera_angle == "front":
+        config_path = RES_DIR / "characters" / role_name / "config.json"
+    else:
+        # 否则从angles子目录加载对应视角的配置
+        config_path = RES_DIR / "characters" / role_name / "angles" / camera_angle / "config.json"
+    
+    if config_path.exists():
+        try:
+            with open(config_path, 'r', encoding='utf-8') as f:
+                config = json.load(f)
+            return config
+        except Exception as e:
+            print(f"   ⚠️ 警告：读取角色配置失败 {role_name}/{camera_angle}: {e}")
+    
+    # 默认正脸配置
+    return {
+        "face_direction": "front",
+        "features": {
+            "eye": {
+                "visible_count": 2,
+                "position": {"x_ratio": 0.5, "y_ratio": 0.35}
+            },
+            "mouth": {
+                "position": {"x_ratio": 0.5, "y_ratio": 0.55}
+            }
+        }
+    }
+
+
 # 角色配置
 ROLE_CONFIG = {
     "A": {
@@ -271,36 +313,100 @@ def generate_tts(text, role, emotion, output_file, max_retries=3):
     final_speed = base_speed * emotion_speed
     
     # ==================== 文本预处理（防止TTS截断）====================
-    # GPT-SoVITS在遇到多个强标点（？！）时可能提前截断
-    # 策略：保留最后一个标点，将前面的强标点替换为逗号
+    # GPT-SoVITS在遇到标点时容易提前截断，即使句子很短
+    # 根据项目规范：发送给 TTS API 的文本必须移除所有标点符号
+    # 同时处理中英文混合问题
+    
+    import re
+    
     processed_text = text
     
-    # 统计强标点数量
-    strong_punctuations = ["？", "?", "！", "!"]
-    punct_count = sum(text.count(p) for p in strong_punctuations)
+    # 步骤1：移除所有英文单词（避免 "WiFi" 被分成 "Wi Fi"）
+    # 将常见英文缩写替换为中文表述
+    english_replacements = {
+        'WiFi': '无线网络',
+        'wifi': '无线网络',
+        'WIFI': '无线网络',
+        'Wi-Fi': '无线网络',
+        'wi-fi': '无线网络',
+        'OK': '好的',
+        'ok': '好的',
+        'OK': '好的',
+        'APP': '应用',
+        'app': '应用',
+        'CPU': '处理器',
+        'GPU': '显卡',
+        'AI': '人工智能',
+        'IP': '网络地址',
+        'VIP': '会员',
+        'CEO': '首席执行官',
+        'CFO': '首席财务官',
+        'CTO': '首席技术官',
+    }
     
-    if punct_count > 1:
-        # 找到最后一个强标点的位置
-        last_punct_pos = -1
-        last_punct_char = ""
-        for punct in strong_punctuations:
-            pos = text.rfind(punct)
-            if pos > last_punct_pos:
-                last_punct_pos = pos
-                last_punct_char = punct
+    for eng, chi in english_replacements.items():
+        processed_text = processed_text.replace(eng, chi)
+    
+    # 如果还有剩余的英文字母，直接移除
+    processed_text = re.sub(r'[a-zA-Z]+', '', processed_text)
+    
+    # 步骤2：处理连续标点符号（如 "..."、"……"）
+    # 将省略号统一替换为逗号
+    processed_text = processed_text.replace('...', '，')
+    processed_text = processed_text.replace('…', '，')
+    processed_text = processed_text.replace('……', '，')
+    
+    # 步骤3：将所有标点符号替换为逗号（除了句末保留一个句号）
+    # 定义标点分类
+    punctuations_strong = ["？", "?", "！", "!"]  # 强标点：极易触发截断
+    punctuations_special = ["——", "—", "~", "～"]  # 特殊标点
+    punctuations_weak = ["，", ",", "；", ";", "、"]  # 弱标点
+    
+    # 找出所有标点位置
+    all_punct_positions = []
+    for punct in punctuations_strong + punctuations_special + punctuations_weak + ["。", "."]:
+        start = 0
+        while True:
+            pos = processed_text.find(punct, start)
+            if pos == -1:
+                break
+            all_punct_positions.append((pos, punct))
+            start = pos + len(punct)
+    
+    punct_count = len(all_punct_positions)
+    
+    # 如果有标点，进行优化
+    if punct_count >= 1:
+        # 找到最后一个标点的位置
+        last_pos, last_punct = max(all_punct_positions, key=lambda x: x[0])
         
-        # 如果找到了最后一个标点，替换前面的所有强标点为逗号
-        if last_punct_pos > 0:
-            before_last = text[:last_punct_pos]
-            after_last = text[last_punct_pos:]
-            
-            # 替换前面的问号和感叹号为逗号
-            before_last = before_last.replace("？", "，").replace("?", "，")
-            before_last = before_last.replace("！", "，").replace("!", "，")
-            
-            processed_text = before_last + after_last
-            
-            print(f"   📝 文本优化（防截断）: '{text}' → '{processed_text}'")
+        # 处理最后一个标点之前的部分
+        before_last = processed_text[:last_pos]
+        after_last = processed_text[last_pos:]  # 包含最后一个标点
+        
+        # 【激进策略】将前面的所有标点都替换为逗号
+        for strong_punct in punctuations_strong:
+            before_last = before_last.replace(strong_punct, "，")
+        
+        for special_punct in punctuations_special:
+            before_last = before_last.replace(special_punct, "，")
+        
+        for weak_punct in punctuations_weak:
+            before_last = before_last.replace(weak_punct, "，")
+        
+        # 最后一个标点统一为句号
+        final_punct = "。"
+        
+        processed_text = before_last + final_punct
+        
+        if processed_text != text:
+            print(f"   📝 文本优化（防截断+去英文）:")
+            print(f"      原始: '{text}'")
+            print(f"      处理后: '{processed_text}'")
+            if len(text) != len(processed_text):
+                print(f"      原因：已移除英文单词并优化标点符号")
+            else:
+                print(f"      原因：检测到 {punct_count} 个标点，已将句中所有标点替换为逗号")
     
     # 根据文本长度估算最小文件大小（经验公式）
     # 每个中文字符约需要 8000-12000 bytes
@@ -322,12 +428,14 @@ def generate_tts(text, role, emotion, output_file, max_retries=3):
             "ref_audio_path": ref_audio_path,
             "prompt_text": prompt_text,
             "prompt_lang": "zh",
-            "top_k": 15,  # 增加top_k，让生成更连贯（从5增加到15）
-            "top_p": 0.85,  # 调整top_p，平衡连贯性和多样性（从1降到0.85）
+            "top_k": 20,  # 增加top_k，让生成更连贯（从15增加到20）
+            "top_p": 0.9,  # 提高top_p，允许更多多样性（从0.85提高到0.9）
             "temperature": EMOTION_CONFIG[emotion]["temperature"],
             "speed_factor": final_speed,
             "seed": fixed_seed,  # 使用固定但可变的种子
-            "split_bucket": False  # 禁用分桶，避免句子被分割
+            "split_bucket": False,  # 禁用分桶，避免句子被分割
+            "text_split_method": "cut0",  # 不使用切分方法
+            "repetition_penalty": 1.2,  # 降低重复惩罚，避免过早停止
         }
         
         print(f"   📤 调用TTS API...")
@@ -400,8 +508,9 @@ def generate_tts(text, role, emotion, output_file, max_retries=3):
                     estimated_duration_min /= final_speed
                     estimated_duration_max /= final_speed
                     
-                    # 如果实际时长远小于预期，可能被截断了
-                    if duration < estimated_duration_min * 0.6:  # 低于预期的60%
+                    # 【增强检测】如果实际时长远小于预期，可能被截断了
+                    # 降低阈值从 0.6 到 0.7，更敏感地检测截断
+                    if duration < estimated_duration_min * 0.7:  # 低于预期的70%（原为60%）
                         print(f"   ⚠️  警告：音频可能被截断！")
                         print(f"      文本长度: {len(text)} 字符")
                         print(f"      预期时长: {estimated_duration_min:.2f}s - {estimated_duration_max:.2f}s")
@@ -416,6 +525,7 @@ def generate_tts(text, role, emotion, output_file, max_retries=3):
                             continue
                         else:
                             print(f"   ⚠️  警告：重试{max_retries}次后仍然过短，但将继续使用")
+                
                     
                     # 检查音量是否过低（正常音频RMS应在0.01-0.05之间）
                     # RMS < 0.005 通常是生成质量问题，需要重试
@@ -707,7 +817,8 @@ def stage2_generate_all(script_data):
             "start": round(current_time, 2),
             "end": round(current_time + duration, 2),
             "duration": round(duration, 2),
-            "actions": actions
+            "actions": actions,
+            "camera_angle": dialog.get("camera_angle", "front")  # 添加视角信息
         }
         
         timeline_data["lines"].append(line_data)
@@ -864,9 +975,6 @@ def merge_audio_files(audio_files, lines_data):
             merged_audio.extend(silence)
             current_time += SILENCE_GAP  # 更新当前时间
         
-        # 记录该句台词的起始时间（在插入音效之前）
-        line_start_time = current_time
-        
         # 随机插入音效（30%概率，在台词开始前）
         sfx_duration = 0.0
         if sfx_samples and random.random() < 0.3:
@@ -892,12 +1000,15 @@ def merge_audio_files(audio_files, lines_data):
             
             print(f"      🎵 插入音效: {sfx_name}.wav (时长:{sfx_duration:.2f}s)")
         
+        # 记录该句台词的起始时间（音效插入后，台词开始前）
+        line_start_time = current_time
+        
         # 添加台词音频
         merged_audio.extend(audio)
         audio_duration = len(audio) / sample_rate
         current_time += audio_duration  # 更新当前时间
         
-        # 记录该句的实际起始时间和时长
+        # 记录该句的实际起始时间和时长（用于音画同步）
         actual_timings.append((line_start_time, audio_duration))
     
     # 保存合并后的音频
@@ -989,6 +1100,92 @@ def regenerate_single_line(dialog_id):
 # ======================
 # Stage 3: 帧渲染
 # ======================
+
+def check_and_create_placeholder_resources():
+    """检查并生成缺失的资源占位符"""
+    print("   🔍 检查资源文件...")
+    
+    # 定义需要检查的资源路径
+    required_resources = {
+        "背景图": [
+            RES_DIR / "background.png",
+            RES_DIR / "bg" / "office.png",
+            RES_DIR / "bg" / "default.png",
+        ],
+        "角色A基础图": [RES_DIR / "characters" / "A" / "base.png"],
+        "角色B基础图": [RES_DIR / "characters" / "B" / "base.png"],
+        "角色A眼睛-睁开": [RES_DIR / "characters" / "A" / "eye" / "open.png"],
+        "角色A眼睛-闭合": [RES_DIR / "characters" / "A" / "eye" / "close.png"],
+        "角色A嘴巴-张开": [RES_DIR / "characters" / "A" / "mouth" / "open.png"],
+        "角色A嘴巴-闭合": [RES_DIR / "characters" / "A" / "mouth" / "close.png"],
+        "角色B眼睛-睁开": [RES_DIR / "characters" / "B" / "eye" / "open.png"],
+        "角色B眼睛-闭合": [RES_DIR / "characters" / "B" / "eye" / "close.png"],
+        "角色B嘴巴-张开": [RES_DIR / "characters" / "B" / "mouth" / "open.png"],
+        "角色B嘴巴-闭合": [RES_DIR / "characters" / "B" / "mouth" / "close.png"],
+    }
+    
+    created_count = 0
+    
+    for resource_name, paths in required_resources.items():
+        # 检查是否有任何一个路径存在
+        exists = any(p.exists() for p in paths)
+        
+        if not exists:
+            # 使用第一个路径创建占位符
+            target_path = paths[0]
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            
+            # 根据资源类型创建不同尺寸的占位符
+            if "背景" in resource_name:
+                # 背景图：1280x720 渐变蓝色
+                bg = np.zeros((720, 1280, 3), dtype=np.uint8)
+                for i in range(720):
+                    blue_value = int(150 + (i / 720) * 105)
+                    green_value = int(100 + (i / 720) * 50)
+                    red_value = int(50 + (i / 720) * 50)
+                    bg[i, :] = [red_value, green_value, blue_value]
+                cv2.imwrite(str(target_path), bg)
+                print(f"      ⚠️  创建背景占位符: {target_path}")
+            
+            elif "base" in str(target_path):
+                # 角色基础图：矩形 200x300，纯色+描边
+                base = np.ones((300, 200, 4), dtype=np.uint8) * 255  # 白色背景
+                # 绘制灰色矩形身体（带透明度的纯色填充）
+                cv2.rectangle(base, (10, 10), (190, 290), (200, 200, 200, 255), -1)
+                # 绘制黑色描边
+                cv2.rectangle(base, (10, 10), (190, 290), (0, 0, 0, 255), 3)
+                cv2.imwrite(str(target_path), base)
+                print(f"      ⚠️  创建{resource_name}占位符: {target_path}")
+            
+            elif "eye" in str(target_path):
+                # 眼睛素材：60x60 圆形
+                eye = np.zeros((60, 60, 4), dtype=np.uint8)
+                # 绘制白色眼白
+                cv2.circle(eye, (30, 30), 25, (255, 255, 255, 255), -1)
+                # 绘制黑色瞳孔
+                cv2.circle(eye, (30, 30), 10, (0, 0, 0, 255), -1)
+                cv2.imwrite(str(target_path), eye)
+                print(f"      ⚠️  创建{resource_name}占位符: {target_path}")
+            
+            elif "mouth" in str(target_path):
+                # 嘴巴素材：80x40 椭圆形
+                mouth = np.zeros((40, 80, 4), dtype=np.uint8)
+                if "open" in str(target_path):
+                    # 张开的嘴巴：红色椭圆
+                    cv2.ellipse(mouth, (40, 20), (30, 15), 0, 0, 360, (255, 0, 0, 255), -1)
+                else:
+                    # 闭合的嘴巴：细线
+                    cv2.line(mouth, (20, 20), (60, 20), (0, 0, 0, 255), 3)
+                cv2.imwrite(str(target_path), mouth)
+                print(f"      ⚠️  创建{resource_name}占位符: {target_path}")
+            
+            created_count += 1
+    
+    if created_count > 0:
+        print(f"   ✅ 共创建了 {created_count} 个资源占位符")
+    else:
+        print(f"   ✅ 所有资源文件已存在")
+
 
 def get_active_actions(timeline_line, current_time):
     """
@@ -1133,88 +1330,196 @@ def blink(n):
 
 
 def draw_character_with_actions(frame, base, mouth_open, mouth_close, eye_open, eye_close,
-                                x, y, is_talking, blink_arr, i, active_actions=None):
+                                x, y, is_talking, blink_arr, i, active_actions=None, role="A", camera_angle="front"):
     """
-    绘制角色（支持动作系统）
+    绘制角色（支持正脸/侧脸多视角）
     
     参数:
+        frame: 画布
+        base: 角色基础图
+        mouth_open/mouth_close: 张嘴/闭嘴素材
+        eye_open/eye_close: 睁眼/闭眼素材
+        x, y: 角色中心坐标
+        is_talking: 是否在说话
+        blink_arr: 眨眼序列
+        i: 当前帧索引
         active_actions: 当前生效的动作字典
+        role: 角色名称（用于加载配置）
+        camera_angle: 拍摄角度（front, side_left, side_right等）
     """
     if base is None:
         return
     
     bh, bw = base.shape[:2]
+
     top_left_x = x - bw // 2
     top_left_y = y - bh // 2
+    
+    # 加载角色配置（根据拍摄角度）
+    config = load_character_config(role, camera_angle)
+    face_direction = config.get("face_direction", "front")
+    features = config.get("features", {})
     
     # 绘制基础身体
     overlay(frame, base, top_left_x, top_left_y)
     
-    # ==================== 五官位置（基于矩形base.png）====================
-    # 对于矩形base.png（200x300），五官位置计算：
-    # - 头部区域：矩形上部约70像素（35%）
-    # - 眼睛：在头部区域的中间偏上
-    # - 嘴巴：在头部区域的底部
-    
-    head_height = int(bh * 0.35)  # 头部高度约105像素 (300 * 0.35)
-    head_top = top_left_y + 15  # 头部顶部（留出边距）
-    
-    # 眼睛位置：头部区域的35%处（更靠上）
-    eye_y = head_top + int(head_height * 0.35)
-    eye_dx = int(bw * 0.20)  # 两眼间距约40像素 (200 * 0.20)
-    
-    # 嘴巴位置：头部区域的85%处（接近下巴）
-    mouth_y = head_top + int(head_height * 0.85)
-    
-    # 统一水平居中偏移
-    center_x = top_left_x + bw // 2
-    
-    # ==================== 眼睛状态 ====================
-    # 默认：眨眼或睁眼
-    default_eye = eye_close if blink_arr[i] else eye_open
-    
-    # 检查是否有特殊眼睛动作
-    if active_actions and "eye" in active_actions:
-        eye_action = active_actions["eye"][-1]  # 取最后一个
-        eye_name = eye_action.get("name", "")
+    # ==================== 根据脸型确定五官位置 ====================
+    if face_direction == "front":
+        # ========== 正脸：两只眼睛 + 居中嘴巴 ==========
+        head_height = int(bh * 0.35)
+        head_top = top_left_y + 15
         
-        # 根据眼睛名称加载对应图片
-        if eye_name == "wide_open":
-            # 尝试加载睁大眼睛素材
-            wide_eye_path = Path(__file__).parent / "res" / "characters" / ("A" if "A" in str(base) else "B") / "eye" / "surprised.png"
-            wide_eye = load_image(wide_eye_path)
-            if wide_eye is not None:
-                default_eye = wide_eye
-    
-    # 绘制眼睛（居中对齐）
-    if default_eye is not None:
-        overlay(frame, default_eye, center_x - eye_dx - int(default_eye.shape[1]//2), eye_y - int(default_eye.shape[0]//2))
-        overlay(frame, default_eye, center_x + eye_dx - int(default_eye.shape[1]//2), eye_y - int(default_eye.shape[0]//2))
-    
-    # ==================== 嘴巴状态 ====================
-    # 默认：说话时张嘴
-    default_mouth = mouth_open if is_talking else mouth_close
-    
-    # 检查是否有特殊嘴巴动作
-    if active_actions and "mouth" in active_actions:
-        mouth_action = active_actions["mouth"][-1]
-        mouth_name = mouth_action.get("name", "")
+        # 眼睛位置：头部区域的35%处
+        eye_y = head_top + int(head_height * 0.35)
+        eye_dx = int(bw * 0.20)
         
-        if mouth_name == "extra_wide":
-            # 尝试加载超大张嘴素材
-            extra_wide_path = Path(__file__).parent / "res" / "characters" / ("A" if "A" in str(base) else "B") / "mouth" / "extra_wide.png"
-            extra_wide = load_image(extra_wide_path)
-            if extra_wide is not None:
-                default_mouth = extra_wide
+        # 嘴巴位置：头部区域的85%处
+        mouth_y = head_top + int(head_height * 0.85)
+        
+        center_x = top_left_x + bw // 2
+        
+        # 获取眼睛状态
+        default_eye = eye_close if blink_arr[i] else eye_open
+        
+        # 检查是否有特殊眼睛动作
+        if active_actions and "eye" in active_actions:
+            eye_action = active_actions["eye"][-1]
+            eye_name = eye_action.get("name", "")
+            
+            if eye_name == "wide_open":
+                wide_eye_path = RES_DIR / "characters" / role / "eye" / "surprised.png"
+                wide_eye = load_image(wide_eye_path)
+                if wide_eye is not None:
+                    default_eye = wide_eye
+        
+        # 绘制双眼
+        if default_eye is not None:
+            overlay(frame, default_eye, 
+                   center_x - eye_dx - int(default_eye.shape[1]//2), 
+                   eye_y - int(default_eye.shape[0]//2))
+            overlay(frame, default_eye, 
+                   center_x + eye_dx - int(default_eye.shape[1]//2), 
+                   eye_y - int(default_eye.shape[0]//2))
+        
+        # 获取嘴巴状态
+        default_mouth = mouth_open if is_talking else mouth_close
+        
+        # 检查是否有特殊嘴巴动作
+        if active_actions and "mouth" in active_actions:
+            mouth_action = active_actions["mouth"][-1]
+            mouth_name = mouth_action.get("name", "")
+            
+            if mouth_name == "extra_wide":
+                extra_wide_path = RES_DIR / "characters" / role / "mouth" / "extra_wide.png"
+                extra_wide = load_image(extra_wide_path)
+                if extra_wide is not None:
+                    default_mouth = extra_wide
+        
+        # 绘制嘴巴（水平居中）
+        if default_mouth is not None:
+            overlay(frame, default_mouth, 
+                   center_x - int(default_mouth.shape[1]//2), 
+                   mouth_y - int(default_mouth.shape[0]//2))
     
-    # 绘制嘴巴（水平居中）
-    if default_mouth is not None:
-        overlay(frame, default_mouth, center_x - int(default_mouth.shape[1]//2), mouth_y - int(default_mouth.shape[0]//2))
+    elif face_direction in ["side_left", "side_right"]:
+        # ========== 侧脸：双眼整体偏移 + 嘴巴偏移 ==========
+        eye_pos = features.get("eye", {}).get("position", {"x_ratio": 0.65, "y_ratio": 0.35})
+        mouth_pos = features.get("mouth", {}).get("position", {"x_ratio": 0.70, "y_ratio": 0.55})
+        
+        # 计算绝对坐标
+        center_x = top_left_x + int(bw * eye_pos.get("x_ratio", 0.65))
+        eye_y = top_left_y + int(bh * eye_pos.get("y_ratio", 0.35))
+        
+        mouth_x = top_left_x + int(bw * mouth_pos.get("x_ratio", 0.70))
+        mouth_y = top_left_y + int(bh * mouth_pos.get("y_ratio", 0.55))
+        
+        # 眼睛间距（比正脸略小，模拟透视）
+        eye_dx = int(bw * 0.15)
+        
+        # 获取眼睛状态
+        default_eye = eye_close if blink_arr[i] else eye_open
+        
+        # 检查是否有特殊眼睛动作
+        if active_actions and "eye" in active_actions:
+            eye_action = active_actions["eye"][-1]
+            eye_name = eye_action.get("name", "")
+            
+            if eye_name == "wide_open":
+                wide_eye_path = RES_DIR / "characters" / role / "eye" / "surprised.png"
+                wide_eye = load_image(wide_eye_path)
+                if wide_eye is not None:
+                    default_eye = wide_eye
+        
+        # 绘制双眼（整体偏移）
+        if default_eye is not None:
+            overlay(frame, default_eye, 
+                   center_x - eye_dx - int(default_eye.shape[1]//2), 
+                   eye_y - int(default_eye.shape[0]//2))
+            overlay(frame, default_eye, 
+                   center_x + eye_dx - int(default_eye.shape[1]//2), 
+                   eye_y - int(default_eye.shape[0]//2))
+        
+        # 获取嘴巴状态
+        default_mouth = mouth_open if is_talking else mouth_close
+        
+        # 检查是否有特殊嘴巴动作
+        if active_actions and "mouth" in active_actions:
+            mouth_action = active_actions["mouth"][-1]
+            mouth_name = mouth_action.get("name", "")
+            
+            if mouth_name == "extra_wide":
+                extra_wide_path = RES_DIR / "characters" / role / "mouth" / "extra_wide.png"
+                extra_wide = load_image(extra_wide_path)
+                if extra_wide is not None:
+                    default_mouth = extra_wide
+        
+        # 绘制嘴巴（偏移位置）
+        if default_mouth is not None:
+            overlay(frame, default_mouth, 
+                   mouth_x - int(default_mouth.shape[1]//2), 
+                   mouth_y - int(default_mouth.shape[0]//2))
+
+
+def render_frames():
+
+        mouth_x = top_left_x + int(bw * mouth_pos.get("x_ratio", 0.70))
+        mouth_y = top_left_y + int(bh * mouth_pos.get("y_ratio", 0.55))
+        
+        # 获取眼睛状态
+        default_eye = eye_close if blink_arr[i] else eye_open
+        
+        # 检查是否有特殊眼睛动作（侧脸暂不支持特殊眼睛）
+        # TODO: 未来可以添加侧脸专用的惊讶眼神等
+        
+        # 绘制单眼
+        if default_eye is not None:
+            overlay(frame, default_eye, 
+                   eye_x - int(default_eye.shape[1]//2), 
+                   eye_y - int(default_eye.shape[0]//2))
+        
+        # 获取嘴巴状态
+        default_mouth = mouth_open if is_talking else mouth_close
+        
+        # 检查是否有特殊嘴巴动作（侧脸暂不支持）
+        
+        # 绘制单边嘴巴
+        if default_mouth is not None:
+            overlay(frame, default_mouth, 
+                   mouth_x - int(default_mouth.shape[1]//2), 
+                   mouth_y - int(default_mouth.shape[0]//2))
 
 
 def render_frames():
     """渲染所有帧（支持动作系统）"""
     print("\n【Stage 3】渲染帧序列...")
+    
+    # ==================== 创建必要的目录 ====================
+    frames_dir = FRAMES_DIR / "frames"
+    frames_dir.mkdir(parents=True, exist_ok=True)
+    print(f"   ✅ 确保帧目录存在: {frames_dir}")
+    
+    # ==================== 检查并生成缺失的资源占位符 ====================
+    check_and_create_placeholder_resources()
     
     # 加载时间轴
     timeline_data = load_json(AUDIO_DIR / "timeline.json")
@@ -1286,21 +1591,15 @@ def render_frames():
         print(f"   ⚠️  检测到前端静音: {silence_duration:.3f}s，正在裁剪...")
         audio = audio[first_speech_frame:]
         
-        # 同时需要调整timeline.json中的所有时间戳
+        # ==================== 关键修复：重新计算并校准时间轴 ====================
+        # 注意：这里不应该直接修改 timeline.json，因为 merge_audio_files 已经记录了精确的时间
+        # 我们只需要确保渲染时使用正确的音频即可
+        
+        # 重新加载时间轴（确保使用最新校准的数据）
         timeline_data = load_json(AUDIO_DIR / "timeline.json")
-        time_offset = silence_duration
         
-        for line in timeline_data["lines"]:
-            line["start"] = round(line["start"] - time_offset, 3)
-            line["end"] = round(line["end"] - time_offset, 3)
-            # 确保时间不为负
-            if line["start"] < 0:
-                line["start"] = 0.0
-            if line["end"] < 0:
-                line["end"] = 0.0
-        
-        save_json(AUDIO_DIR / "timeline.json", timeline_data)
-        print(f"   ✅ 已调整时间轴，偏移量: -{time_offset:.3f}s")
+        print(f"   ✅ 已裁剪前端静音，音频时长减少: {silence_duration:.3f}s")
+        print(f"   📊 当前音频总帧数: {len(audio)} ({len(audio)/sr:.2f}s)")
     
     step = int(sr * FRAME_DURATION)
     vols = []
@@ -1320,19 +1619,56 @@ def render_frames():
     states = ["open" if v > MOUTH_THRESHOLD else "close" for v in vols]
     N = len(states)
     
-    # 加载角色资源
-    def load_char_resources(role):
-        base_dir = RES_DIR / "characters" / role
+    # ==================== 关键修复：根据实际音频时长验证时间轴 ====================
+    actual_audio_duration = len(audio) / sr
+    expected_frames = int(actual_audio_duration * FPS)
+    
+    print(f"\n   🔍 音画同步检查:")
+    print(f"      实际音频时长: {actual_audio_duration:.3f}s")
+    print(f"      理论帧数: {expected_frames} 帧")
+    print(f"      实际渲染帧数: {N} 帧")
+    
+    if abs(N - expected_frames) > 2:  # 允许2帧误差
+        print(f"   ⚠️  警告：帧数不匹配！可能存在音画不同步")
+        print(f"      建议：检查 TTS 生成的音频是否有异常静音或截断")
+    
+    # 加载角色资源（支持多视角）
+    def load_char_resources(role_name, camera_angle="front"):
+        """
+        加载角色资源，支持正脸和不同视角
+        
+        参数:
+            role_name: 角色名称（如 "A", "B"）
+            camera_angle: 拍摄角度（如 "front", "side_left", "side_right"）
+        
+        返回:
+            角色资源字典
+        """
+        if camera_angle == "front":
+            base_dir = RES_DIR / "characters" / role_name
+        else:
+            # 从angles子目录加载对应视角的素材
+            base_dir = RES_DIR / "characters" / role_name / "angles" / camera_angle
+            
+            # 如果视角素材不存在，降级到正脸
+            if not base_dir.exists():
+                print(f"   ⚠️ 警告：{role_name}的{camera_angle}视角素材不存在，使用正脸")
+                base_dir = RES_DIR / "characters" / role_name
+                camera_angle = "front"
+        
         return {
             "base": load_image(base_dir / "base.png"),
             "mouth_open": load_image(base_dir / "mouth" / "open.png"),
             "mouth_close": load_image(base_dir / "mouth" / "close.png"),
             "eye_open": load_image(base_dir / "eye" / "open.png"),
             "eye_close": load_image(base_dir / "eye" / "close.png"),
+            "camera_angle": camera_angle  # 记录实际使用的视角
         }
     
-    char_A = load_char_resources("A")
-    char_B = load_char_resources("B")
+    # 预加载基础角色资源（正脸）
+    char_resources_cache = {}
+    for role in ["A", "B"]:
+        char_resources_cache[role] = load_char_resources(role, "front")
     
     # 角色位置
     A_X, A_Y = int(W * 0.25), int(H * 0.65)
@@ -1345,6 +1681,9 @@ def render_frames():
     # 创建帧索引
     frame_index = {}
     
+    # 用于跟踪视角变化的变量
+    last_dialog_id = None
+    
     # 逐帧渲染
     print(f"   开始渲染 {N} 帧...")
     for i in range(N):
@@ -1353,11 +1692,22 @@ def render_frames():
         # 确定当前台词
         current_role = None
         current_line = None
+        current_camera_angle = "front"  # 默认正脸
+        
         for line in timeline_data["lines"]:
             if line["start"] <= t < line["end"]:
                 current_role = line["role"]
                 current_line = line
+                # 提取拍摄角度，默认为front
+                current_camera_angle = line.get("camera_angle", "front")
                 break
+        
+        # 调试输出：在每句台词开始时输出视角信息
+        if current_line:
+            dialog_id = current_line.get("dialog_id")
+            if dialog_id != last_dialog_id:
+                print(f"   📷 [{dialog_id}] 角色={current_role}, 视角={current_camera_angle}, 台词={current_line.get('text', '')[:15]}...")
+                last_dialog_id = dialog_id
         
         # 创建新帧
         frame = BG.copy()
@@ -1389,13 +1739,28 @@ def render_frames():
         A_X_final, A_Y_final = apply_shake_effect(A_X_scaled, A_Y_scaled, 
                                                    active_actions_A.get("shake", []), i)
         
-        # 绘制角色A
+        # 绘制角色A（根据camera_angle动态加载资源）
         force_speak_A = states[i] == "open" if current_role == "A" else False
+        
+        if current_role == "A":
+            # 根据拍摄角度加载对应的角色资源
+            role_resources_A = load_char_resources("A", current_camera_angle)
+        else:
+            # 如果当前不是A说话，使用缓存的正脸资源
+            role_resources_A = char_resources_cache["A"]
+
+        
         draw_character_with_actions(
-            frame, char_A["base"], char_A["mouth_open"], char_A["mouth_close"],
-            char_A["eye_open"], char_A["eye_close"],
+            frame, 
+            role_resources_A["base"], 
+            role_resources_A["mouth_open"], 
+            role_resources_A["mouth_close"],
+            role_resources_A["eye_open"], 
+            role_resources_A["eye_close"],
             A_X_final, A_Y_final, force_speak_A, blink_A, i,
-            active_actions=active_actions_A
+            active_actions=active_actions_A,
+            role="A",  # 传递基础角色名称用于加载配置
+            camera_angle=role_resources_A.get("camera_angle", "front")  # 传递实际使用的视角
         )
         
         # ==================== 获取B角色的活跃动作 ====================
@@ -1407,15 +1772,28 @@ def render_frames():
         B_X_final, B_Y_final = apply_shake_effect(B_X_scaled, B_Y_scaled,
                                                    active_actions_B.get("shake", []), i)
         
-        # 绘制角色B
+        # 绘制角色B（根据camera_angle动态加载资源）
         force_speak_B = states[i] == "open" if current_role == "B" else False
-        draw_character_with_actions(
-            frame, char_B["base"], char_B["mouth_open"], char_B["mouth_close"],
-            char_B["eye_open"], char_B["eye_close"],
-            B_X_final, B_Y_final, force_speak_B, blink_B, i,
-            active_actions=active_actions_B
-        )
         
+        if current_role == "B":
+            # 根据拍摄角度加载对应的角色资源
+            role_resources_B = load_char_resources("B", current_camera_angle)
+        else:
+            # 如果当前不是B说话，使用缓存的正脸资源
+            role_resources_B = char_resources_cache["B"]
+        draw_character_with_actions(
+            frame, 
+            role_resources_B["base"], 
+            role_resources_B["mouth_open"], 
+            role_resources_B["mouth_close"],
+            role_resources_B["eye_open"], 
+            role_resources_B["eye_close"],
+            B_X_final, B_Y_final, force_speak_B, blink_B, i,
+            active_actions=active_actions_B,
+            role="B",  # 传递基础角色名称用于加载配置
+            camera_angle=role_resources_B.get("camera_angle", "front")  # 传递实际使用的视角
+        )
+
         # ==================== 渲染特效层 ====================
         # TODO: 这里可以添加特效渲染逻辑（问号、感叹号等）
         # 需要加载特效图片并叠加到frame上
@@ -1458,6 +1836,8 @@ def generate_subtitle_file(timeline_data):
     
     subtitle_file = AUDIO_DIR / "subtitles.srt"
     
+    import re
+    
     with open(subtitle_file, 'w', encoding='utf-8') as f:
         idx = 1
         for line in timeline_data["lines"]:
@@ -1475,10 +1855,16 @@ def generate_subtitle_file(timeline_data):
             start_str = format_srt_time(start_time)
             end_str = format_srt_time(end_time)
             
+            # ==================== 清理字幕文本 ====================
+            subtitle_text = line['text']
+            
+            # 移除开头的标点符号（问号、感叹号等）
+            subtitle_text = re.sub(r'^[？?！!。，,；;：:""''（）()【】\[\]]+', '', subtitle_text)
+            
             # 写入字幕块
             f.write(f"{idx}\n")
             f.write(f"{start_str} --> {end_str}\n")
-            f.write(f"{line['text']}\n\n")
+            f.write(f"{subtitle_text}\n\n")
             
             idx += 1
     
@@ -1553,19 +1939,48 @@ def main():
     """主函数"""
     import sys
     
-    if len(sys.argv) < 2:
-        print("用法: python pipeline.py <stage>")
-        print("可用阶段: stage1, stage2, stage3, stage4, run-all")
+    # 映射关系：p1 -> stage1, p2 -> stage2, 以此类推
+    stage_mapping = {
+        "p1": "stage1",
+        "p2": "stage2",
+        "p3": "stage3",
+        "p4": "stage4",
+    }
+    
+    if len(sys.argv) == 1:
+        # 不带参数，执行全部流程
+        print("\n" + "="*60)
+        print("🎬 开始执行完整流程")
+        print("="*60)
+        
+        run_stage("stage2")  # 生成音频（剧本已存在）
+        run_stage("stage3")  # 渲染帧
+        run_stage("stage4")  # 合成视频
+        
+        print("\n" + "="*60)
+        print("✅ 完整流程执行完毕！")
+        print("="*60)
         return
     
     command = sys.argv[1]
     
-    if command == "run-all":
-        run_stage("stage2")
-        run_stage("stage3")
-        run_stage("stage4")
+    # 支持两种格式：p1/p2/p3/p4 或 stage1/stage2/stage3/stage4
+    if command in stage_mapping:
+        stage_name = stage_mapping[command]
+    elif command.startswith("stage"):
+        stage_name = command
     else:
-        run_stage(command)
+        print(f"❌ 未知命令: {command}")
+        print("\n用法:")
+        print("  python pipeline.py          # 执行完整流程")
+        print("  python pipeline.py p1       # 执行 Stage 1 (剧本)")
+        print("  python pipeline.py p2       # 执行 Stage 2 (音频)")
+        print("  python pipeline.py p3       # 执行 Stage 3 (帧渲染)")
+        print("  python pipeline.py p4       # 执行 Stage 4 (视频合成)")
+        print("  python pipeline.py stage1   # 同上（兼容旧格式）")
+        return
+    
+    run_stage(stage_name)
 
 
 if __name__ == "__main__":

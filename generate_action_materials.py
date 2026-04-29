@@ -36,6 +36,62 @@ def create_character_base(output_path, size=(200, 300), color_bgr=(255, 200, 150
     print(f"✅ {output_path.name} ({size[0]}x{size[1]})")
 
 
+def create_character_base_side_left(output_path, size=(200, 300), color_bgr=(255, 200, 150)):
+    """生成左侧脸角色基础身体图 - 带透视感的梯形"""
+    img = np.ones((size[1], size[0], 4), dtype=np.uint8) * 255
+    
+    # 绘制梯形（模拟侧脸透视效果）
+    margin_top = 20
+    margin_bottom = 20
+    margin_left = 30  # 左边距更大，模拟远离视角
+    margin_right = 10  # 右边距更小，模拟靠近视角
+    
+    # 定义梯形的四个顶点（左上、右上、右下、左下）
+    pts = np.array([
+        [margin_left, margin_top],      # 左上
+        [size[0] - margin_right, margin_top],   # 右上
+        [size[0] - margin_right, size[1] - margin_bottom],  # 右下
+        [margin_left + 20, size[1] - margin_bottom]  # 左下（稍微向右收缩）
+    ], dtype=np.int32)
+    
+    # 填充梯形
+    cv2.fillPoly(img, [pts], color_bgr + (255,))
+    
+    # 黑色描边
+    cv2.polylines(img, [pts], isClosed=True, color=(0, 0, 0, 255), thickness=3)
+    
+    cv2.imwrite(str(output_path), img)
+    print(f"✅ {output_path.name} ({size[0]}x{size[1]}, 侧脸梯形)")
+
+
+def create_character_base_side_right(output_path, size=(200, 300), color_bgr=(255, 200, 150)):
+    """生成右侧脸角色基础身体图 - 带透视感的梯形"""
+    img = np.ones((size[1], size[0], 4), dtype=np.uint8) * 255
+    
+    # 绘制梯形（模拟侧脸透视效果，与左侧脸镜像对称）
+    margin_top = 20
+    margin_bottom = 20
+    margin_left = 10  # 左边距更小，模拟靠近视角
+    margin_right = 30  # 右边距更大，模拟远离视角
+    
+    # 定义梯形的四个顶点（左上、右上、右下、左下）
+    pts = np.array([
+        [margin_left, margin_top],      # 左上
+        [size[0] - margin_right, margin_top],   # 右上
+        [size[0] - margin_right - 20, size[1] - margin_bottom],  # 右下（稍微向左收缩）
+        [margin_left, size[1] - margin_bottom]  # 左下
+    ], dtype=np.int32)
+    
+    # 填充梯形
+    cv2.fillPoly(img, [pts], color_bgr + (255,))
+    
+    # 黑色描边
+    cv2.polylines(img, [pts], isClosed=True, color=(0, 0, 0, 255), thickness=3)
+    
+    cv2.imwrite(str(output_path), img)
+    print(f"✅ {output_path.name} ({size[0]}x{size[1]}, 侧脸梯形)")
+
+
 def create_normal_eyes(output_path, size=(60, 60)):
     """生成正常睁眼 - 黑色圆形带瞳孔（缩小尺寸）"""
     img = np.ones((size[1], size[0], 4), dtype=np.uint8) * 255
@@ -59,6 +115,31 @@ def create_normal_eyes(output_path, size=(60, 60)):
     print(f"✅ {output_path.name} ({size[0]}x{size[1]})")
 
 
+def create_single_eye_open(output_path, size=(60, 60), direction="left"):
+    """生成单眼睁开（侧脸用）"""
+    img = np.ones((size[1], size[0], 4), dtype=np.uint8) * 255
+    
+    center = (size[0] // 2, size[1] // 2)
+    radius = min(size) // 2 - 6
+    
+    # 眼白
+    cv2.circle(img, center, radius, (255, 255, 255, 255), -1)
+    cv2.circle(img, center, radius, (0, 0, 0, 255), 2)
+    
+    # 瞳孔（稍微偏向一侧模拟侧视）
+    pupil_offset = 5 if direction == "left" else -5
+    pupil_center = (center[0] + pupil_offset, center[1])
+    pupil_radius = radius // 3
+    cv2.circle(img, pupil_center, pupil_radius, (0, 0, 0, 255), -1)
+    
+    # 高光
+    highlight_pos = (pupil_center[0] + radius // 3, pupil_center[1] - radius // 3)
+    cv2.circle(img, highlight_pos, pupil_radius // 2, (255, 255, 255, 255), -1)
+    
+    cv2.imwrite(str(output_path), img)
+    print(f"✅ {output_path.name} ({size[0]}x{size[1]}, {direction})")
+
+
 def create_close_eyes(output_path, size=(60, 15)):
     """生成闭眼 - 黑色弧线（缩小尺寸）"""
     img = np.ones((size[1], size[0], 4), dtype=np.uint8) * 255
@@ -73,6 +154,22 @@ def create_close_eyes(output_path, size=(60, 15)):
     
     cv2.imwrite(str(output_path), img)
     print(f"✅ {output_path.name} ({size[0]}x{size[1]})")
+
+
+def create_single_eye_close(output_path, size=(60, 15), direction="left"):
+    """生成单眼闭合（侧脸用）"""
+    img = np.ones((size[1], size[0], 4), dtype=np.uint8) * 255
+    
+    center = (size[0] // 2, size[1] // 2)
+    
+    # 绘制闭合的眼线（向下弯曲的弧线）
+    start_angle = 200
+    end_angle = 340
+    axes = (size[0] // 2 - 5, size[1] // 2)
+    cv2.ellipse(img, center, axes, 0, start_angle, end_angle, (0, 0, 0, 255), 3)
+    
+    cv2.imwrite(str(output_path), img)
+    print(f"✅ {output_path.name} ({size[0]}x{size[1]}, {direction})")
 
 
 def create_normal_mouth_open(output_path, size=(50, 35)):
@@ -90,6 +187,22 @@ def create_normal_mouth_open(output_path, size=(50, 35)):
     print(f"✅ {output_path.name} ({size[0]}x{size[1]})")
 
 
+def create_single_mouth_open(output_path, size=(50, 35), direction="left"):
+    """生成单边张嘴（侧脸用）- 半椭圆"""
+    img = np.ones((size[1], size[0], 4), dtype=np.uint8) * 255
+    
+    center = (size[0] // 2, size[1] // 2)
+    axes = (size[0] // 2 - 4, size[1] // 2 - 4)
+    
+    # 绘制半椭圆（只显示一半）
+    cv2.ellipse(img, center, axes, 0, 0, 180 if direction == "left" else 180, (0, 0, 0, 255), 2)
+    inner_axes = (axes[0] - 3, axes[1] - 3)
+    cv2.ellipse(img, center, inner_axes, 0, 0, 180 if direction == "left" else 180, (0, 0, 139, 255), -1)
+    
+    cv2.imwrite(str(output_path), img)
+    print(f"✅ {output_path.name} ({size[0]}x{size[1]}, {direction})")
+
+
 def create_normal_mouth_close(output_path, size=(50, 8)):
     """生成正常闭嘴 - 黑色细线（缩小尺寸）"""
     img = np.ones((size[1], size[0], 4), dtype=np.uint8) * 255
@@ -101,6 +214,19 @@ def create_normal_mouth_close(output_path, size=(50, 8)):
     
     cv2.imwrite(str(output_path), img)
     print(f"✅ {output_path.name} ({size[0]}x{size[1]})")
+
+
+def create_single_mouth_close(output_path, size=(50, 8), direction="left"):
+    """生成单边闭嘴（侧脸用）"""
+    img = np.ones((size[1], size[0], 4), dtype=np.uint8) * 255
+    
+    center = (size[0] // 2, size[1] // 2)
+    pt1 = (8, center[1])
+    pt2 = (size[0] - 8, center[1])
+    cv2.line(img, pt1, pt2, (0, 0, 0, 255), 3)
+    
+    cv2.imwrite(str(output_path), img)
+    print(f"✅ {output_path.name} ({size[0]}x{size[1]}, {direction})")
 
 
 def create_surprised_eyes(output_path, size=(70, 70)):
@@ -324,15 +450,38 @@ def create_pop_sound(output_path, duration=0.15, sample_rate=44100):
     print(f"✅ {output_path.name} (时长:{duration}s, 采样率:{sample_rate}Hz)")
 
 
+def create_role_config(output_path, face_direction, eye_position, mouth_position):
+    """创建角色配置文件"""
+    import json
+    
+    config = {
+        "face_direction": face_direction,
+        "features": {
+            "eye": {
+                "visible_count": 1 if "side" in face_direction else 2,
+                "position": eye_position
+            },
+            "mouth": {
+                "position": mouth_position
+            }
+        }
+    }
+    
+    with open(output_path, 'w', encoding='utf-8') as f:
+        json.dump(config, f, ensure_ascii=False, indent=2)
+    
+    print(f"✅ {output_path.name} (脸型:{face_direction})")
+
+
 def main():
     print("=" * 60)
-    print("🎨 生成沙雕动画完整素材集（不含face表情层）")
+    print("🎨 生成沙雕动画完整素材集（支持正脸+侧脸）")
     print("=" * 60)
     
-    # 为角色A和B生成素材
+    # ==================== 为角色A和B生成正脸素材 ====================
     for role in ['A', 'B']:
         print(f"\n{'='*60}")
-        print(f"角色 {role}:")
+        print(f"角色 {role} (正脸):")
         print('='*60)
         
         char_dir = RES_DIR / "characters" / role
@@ -355,8 +504,80 @@ def main():
         create_normal_mouth_close(mouth_dir / "close.png")
         create_extra_wide_mouth(mouth_dir / "extra_wide.png")
         create_smile_mouth(mouth_dir / "smile.png")
+        
+        # 创建正脸配置文件
+        create_role_config(
+            char_dir / "config.json",
+            face_direction="front",
+            eye_position={"x_ratio": 0.5, "y_ratio": 0.35},
+            mouth_position={"x_ratio": 0.5, "y_ratio": 0.55}
+        )
     
-    # 特效素材
+    # ==================== 为角色A生成左侧脸素材 ====================
+    print(f"\n{'='*60}")
+    print(f"角色 A - 视角素材:")
+    print('='*60)
+    
+    # 创建视角目录：res/characters/A/angles/side_left/
+    angles_dir_A = RES_DIR / "characters" / "A" / "angles"
+    
+    # 左侧脸素材
+    side_left_dir = angles_dir_A / "side_left"
+    side_left_dir.mkdir(parents=True, exist_ok=True)
+    
+    create_character_base_side_left(side_left_dir / "base.png", size=(200, 300))
+    
+    eye_dir = side_left_dir / "eye"
+    eye_dir.mkdir(parents=True, exist_ok=True)
+    create_single_eye_open(eye_dir / "open.png", direction="left")
+    create_single_eye_close(eye_dir / "close.png", direction="left")
+    
+    mouth_dir = side_left_dir / "mouth"
+    mouth_dir.mkdir(parents=True, exist_ok=True)
+    create_single_mouth_open(mouth_dir / "open.png", direction="left")
+    create_single_mouth_close(mouth_dir / "close.png", direction="left")
+    
+    # 创建左侧脸配置文件
+    create_role_config(
+        side_left_dir / "config.json",
+        face_direction="side_left",
+        eye_position={"x_ratio": 0.65, "y_ratio": 0.35},
+        mouth_position={"x_ratio": 0.70, "y_ratio": 0.55}
+    )
+    
+    print(f"✅ A/side_left 素材生成完成")
+    
+    # ==================== 为角色B生成右侧脸素材 ====================
+    # 创建视角目录：res/characters/B/angles/side_right/
+    angles_dir_B = RES_DIR / "characters" / "B" / "angles"
+    
+    # 右侧脸素材
+    side_right_dir = angles_dir_B / "side_right"
+    side_right_dir.mkdir(parents=True, exist_ok=True)
+    
+    create_character_base_side_right(side_right_dir / "base.png", size=(200, 300))
+    
+    eye_dir = side_right_dir / "eye"
+    eye_dir.mkdir(parents=True, exist_ok=True)
+    create_single_eye_open(eye_dir / "open.png", direction="right")
+    create_single_eye_close(eye_dir / "close.png", direction="right")
+    
+    mouth_dir = side_right_dir / "mouth"
+    mouth_dir.mkdir(parents=True, exist_ok=True)
+    create_single_mouth_open(mouth_dir / "open.png", direction="right")
+    create_single_mouth_close(mouth_dir / "close.png", direction="right")
+    
+    # 创建右侧脸配置文件
+    create_role_config(
+        side_right_dir / "config.json",
+        face_direction="side_right",
+        eye_position={"x_ratio": 0.35, "y_ratio": 0.35},
+        mouth_position={"x_ratio": 0.30, "y_ratio": 0.55}
+    )
+    
+    print(f"✅ B/side_right 素材生成完成")
+
+    # ==================== 特效素材 ====================
     print(f"\n{'='*60}")
     print("视觉特效:")
     print('='*60)
@@ -367,7 +588,7 @@ def main():
     create_shock_lines_effect(effects_dir / "shock_lines.png")
     create_dots_effect(effects_dir / "dots.png")
     
-    # 音效素材
+    # ==================== 音效素材 ====================
     print(f"\n{'='*60}")
     print("音效素材:")
     print('='*60)
@@ -384,11 +605,21 @@ def main():
     
     # 统计生成的文件
     total_files = 0
+    
+    # 统计所有角色的素材（包括正脸和视角素材）
     for role in ['A', 'B']:
         char_dir = RES_DIR / "characters" / role
-        files = list(char_dir.rglob("*.png"))
-        total_files += len(files)
-        print(f"  角色{role}: {len(files)} 个图片文件")
+        if char_dir.exists():
+            files = list(char_dir.rglob("*.png"))
+            total_files += len(files)
+            
+            # 检查是否有angles子目录
+            angles_dir = char_dir / "angles"
+            if angles_dir.exists():
+                angle_subdirs = [d.name for d in angles_dir.iterdir() if d.is_dir()]
+                print(f"  角色{role}: {len(files)} 个图片文件 (包含视角: {', '.join(angle_subdirs)})")
+            else:
+                print(f"  角色{role}(正脸): {len(files)} 个图片文件")
     
     effect_files = list(effects_dir.glob("*.png"))
     total_files += len(effect_files)
